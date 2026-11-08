@@ -1,7 +1,7 @@
 {
   "name": "demonstrateur-3d",
   "private": true,
-  "description": "Démonstrateur 3D pédagogique dans le navigateur, construit avec React et Three.js.",
+  "description": "Démonstrateur 3D pédagogique dans le navigateur, construit avec React et du WebGL2 écrit à la main.",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
@@ -14,8 +14,7 @@
   },
   "dependencies": {
     "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "three": "^0.187.0"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -26,7 +25,6 @@
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^6.1.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",

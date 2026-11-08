@@ -1,38 +1,39 @@
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { BoxGeometry, Mesh, MeshStandardMaterial, type PerspectiveCamera, type Scene } from 'three'
+import { SHADER_LOG, createFakeGl, type FakeGl, type FakeGlOptions } from '../test/fakeGl'
 import { Viewer3D } from './Viewer3D'
 
-// On remplace seulement le renderer (il a besoin de WebGL, absent de jsdom). Tout le reste de
-// Three.js est réel : la scène, le cube, la géométrie et le matériau sont de vrais objets, dont
-// on surveille la libération.
-const rendererMock = vi.hoisted(() => ({
-  instances: [] as {
-    render: ReturnType<typeof vi.fn>
-    dispose: ReturnType<typeof vi.fn>
-    setPixelRatio: ReturnType<typeof vi.fn>
-    setSize: ReturnType<typeof vi.fn>
-  }[],
-  failOnCreate: false,
-}))
+// jsdom n'a pas de WebGL : `getContext('webgl2')` est remplacé par un faux contexte (voir
+// test/fakeGl.ts) qui enregistre les appels et compte les ressources GPU encore vivantes. Les
+// shaders, les maths et le composant sont les vrais ; seul le GPU est simulé.
 
-vi.mock('three', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('three')>()
-  class FakeRenderer {
-    render = vi.fn()
-    dispose = vi.fn()
-    setPixelRatio = vi.fn()
-    setSize = vi.fn()
-    constructor() {
-      if (rendererMock.failOnCreate) throw new Error('Error creating WebGL context.')
-      rendererMock.instances.push(this)
+/** Un faux contexte par canvas, comme le navigateur (même canvas = même contexte). */
+let fakes: WeakMap<HTMLCanvasElement, FakeGl>
+/** Les faux contextes des canvas de la page (pas celui, jetable, de la détection), dans l'ordre. */
+let pageFakes: FakeGl[]
+let fakeOptions: Omit<FakeGlOptions, 'size'>
+/** Quand c'est vrai, le canvas de la page n'obtient pas de contexte (la détection, elle, réussit). */
+let denyPageContext: boolean
+let getContextSpy: ReturnType<typeof spyOnGetContext>
+
+function spyOnGetContext() {
+  return vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+    this: HTMLCanvasElement,
+    type: string,
+  ) {
+    if (type !== 'webgl2') return null
+    // Le canvas jetable de la détection n'est pas dans la page ; celui du composant, si.
+    if (denyPageContext && this.isConnected) return null
+    let fake = fakes.get(this)
+    if (!fake) {
+      // `size: this` : le tampon de dessin du faux contexte suit canvas.width / canvas.height.
+      fake = createFakeGl({ ...fakeOptions, size: this })
+      fakes.set(this, fake)
+      if (this.isConnected) pageFakes.push(fake)
     }
-  }
-  return { ...actual, WebGLRenderer: FakeRenderer }
-})
-
-// La détection est testée à part (core/webgl.test.ts) : ici on veut le chemin « WebGL présent ».
-vi.mock('../core/webgl', () => ({ isWebGLAvailable: () => true }))
+    return fake.gl
+  } as never)
+}
 
 // Boucle d'animation pilotée à la main : on décide quand chaque image « passe ».
 let frameCallbacks: Map<number, FrameRequestCallback>
@@ -70,17 +71,31 @@ function fireResize() {
   for (const callback of resizeCallbacks) callback([], {} as ResizeObserver)
 }
 
-/** Retrouve le cube dans la scène passée au renderer. */
-function findCube(renderer: (typeof rendererMock.instances)[number]): Mesh {
-  const scene = renderer.render.mock.calls[0]?.[0] as Scene
-  const cube = scene.children.find((child): child is Mesh => child instanceof Mesh)
-  if (!cube) throw new Error('cube introuvable dans la scène')
-  return cube
+/** Envoie un événement de contexte WebGL au canvas, et renvoie l'événement pour inspecter `defaultPrevented`. */
+function dispatchContextEvent(canvas: HTMLCanvasElement, type: 'webglcontextlost' | 'webglcontextrestored') {
+  const event = new Event(type, { cancelable: true })
+  act(() => {
+    canvas.dispatchEvent(event)
+  })
+  return event
 }
 
+/** Monte le composant et renvoie son canvas et son faux contexte. */
+function mountViewer(props: { className?: string } = {}) {
+  const view = render(<Viewer3D {...props} />)
+  const canvas = view.container.querySelector('canvas')!
+  return { ...view, canvas, fake: fakes.get(canvas)! }
+}
+
+const NOTHING_ALIVE = { shader: 0, program: 0, buffer: 0, vertexArray: 0 }
+const ONE_CUBE_ALIVE = { shader: 0, program: 1, buffer: 3, vertexArray: 1 }
+
 beforeEach(() => {
-  rendererMock.instances.length = 0
-  rendererMock.failOnCreate = false
+  fakes = new WeakMap()
+  pageFakes = []
+  fakeOptions = {}
+  denyPageContext = false
+  getContextSpy = spyOnGetContext()
   frameCallbacks = new Map()
   nextFrameId = 1
   resizeCallbacks = []
@@ -112,25 +127,67 @@ afterEach(() => {
   observerObserve.mockClear()
 })
 
-describe('Viewer3D : nettoyage au démontage', () => {
-  it("libère le renderer, la géométrie et le matériau, et arrête l'animation", () => {
-    const geometryDispose = vi.spyOn(BoxGeometry.prototype, 'dispose')
-    const materialDispose = vi.spyOn(MeshStandardMaterial.prototype, 'dispose')
+describe('Viewer3D : création', () => {
+  it('demande un contexte WebGL2 avec antialias et prépare le dessin', () => {
+    const { canvas, fake } = mountViewer()
 
-    const { unmount } = render(<Viewer3D />)
-    const renderer = rendererMock.instances[0]!
+    expect(getContextSpy).toHaveBeenCalledWith('webgl2', { antialias: true })
+    expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
+    expect(fake.mocks.enable).toHaveBeenCalledWith(fake.gl.DEPTH_TEST)
+    expect(fake.mocks.enable).toHaveBeenCalledWith(fake.gl.CULL_FACE)
+    expect(canvas).toHaveAttribute('role', 'img')
+    expect(canvas).toHaveAccessibleName(/cube/i)
+  })
+
+  it('dessine le cube à chaque image tant que le composant est monté', () => {
+    const { fake } = mountViewer()
+
+    runFrame(0)
+    runFrame(16)
+
+    expect(fake.mocks.drawElements).toHaveBeenCalledTimes(2)
+    expect(frameCallbacks.size).toBe(1) // la suivante est déjà demandée
+  })
+})
+
+describe('Viewer3D : nettoyage au démontage', () => {
+  it("supprime programme, buffers et VAO, et arrête l'animation et les observateurs", () => {
+    const { unmount, fake } = mountViewer()
     runFrame(0) // une image rendue : l'animation a démarré et une suivante est en attente
     const pendingFrameId = [...frameCallbacks.keys()][0]!
 
-    expect(renderer.dispose).not.toHaveBeenCalled()
+    expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     unmount()
 
-    expect(renderer.dispose).toHaveBeenCalledOnce()
-    expect(geometryDispose).toHaveBeenCalledOnce()
-    expect(materialDispose).toHaveBeenCalledOnce()
+    expect(fake.liveCounts()).toEqual(NOTHING_ALIVE)
+    expect(fake.mocks.deleteProgram).toHaveBeenCalledOnce()
+    expect(fake.mocks.deleteBuffer).toHaveBeenCalledTimes(3)
+    expect(fake.mocks.deleteVertexArray).toHaveBeenCalledOnce()
     expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingFrameId)
     expect(frameCallbacks.size).toBe(0) // plus aucune image en attente : la boucle est bien morte
     expect(observerDisconnect).toHaveBeenCalledOnce()
+  })
+
+  it('ne perd pas volontairement le contexte (le canvas est réutilisé par le second montage de StrictMode)', () => {
+    const { unmount, fake } = mountViewer()
+
+    unmount()
+
+    // `loseContext` s'obtient via l'extension WEBGL_lose_context : elle ne doit jamais être demandée.
+    expect(fake.mocks.getExtension).not.toHaveBeenCalled()
+  })
+
+  it('retire les écouteurs de contexte : un canvas démonté ne réagit plus', () => {
+    const { unmount, canvas, fake } = mountViewer()
+    unmount()
+    const programsBefore = fake.mocks.createProgram.mock.calls.length
+
+    const lost = dispatchContextEvent(canvas, 'webglcontextlost')
+    dispatchContextEvent(canvas, 'webglcontextrestored')
+
+    expect(lost.defaultPrevented).toBe(false)
+    expect(fake.mocks.createProgram.mock.calls.length).toBe(programsBefore)
+    expect(frameCallbacks.size).toBe(0)
   })
 
   it('en StrictMode, le premier montage est entièrement nettoyé avant le second', () => {
@@ -139,24 +196,56 @@ describe('Viewer3D : nettoyage au démontage', () => {
         <Viewer3D />
       </StrictMode>,
     )
+    const canvas = container.querySelector('canvas')!
+    const fake = fakes.get(canvas)!
 
-    // React a monté, démonté puis remonté : deux renderers créés, le premier libéré.
-    expect(rendererMock.instances).toHaveLength(2)
-    expect(rendererMock.instances[0]!.dispose).toHaveBeenCalledOnce()
-    expect(rendererMock.instances[1]!.dispose).not.toHaveBeenCalled()
+    // React a monté, démonté puis remonté : deux jeux de ressources créés, un seul encore vivant.
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
+    expect(fake.mocks.deleteProgram).toHaveBeenCalledTimes(1)
+    expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     // Une seule boucle vivante (celle du second montage) et un seul canvas dans la page.
     expect(frameCallbacks.size).toBe(1)
     expect(container.querySelectorAll('canvas')).toHaveLength(1)
+    expect(observerDisconnect).toHaveBeenCalledTimes(1)
 
     unmount()
-    expect(rendererMock.instances[1]!.dispose).toHaveBeenCalledOnce()
+
+    expect(fake.liveCounts()).toEqual(NOTHING_ALIVE)
     expect(frameCallbacks.size).toBe(0)
+    // Aucun écouteur de contexte ne survit aux deux montages.
+    expect(dispatchContextEvent(canvas, 'webglcontextlost').defaultPrevented).toBe(false)
+  })
+
+  it("démonté avant la première image : annule l'image en attente, rien n'est dessiné", () => {
+    const { unmount, fake } = mountViewer()
+    const pendingFrameId = [...frameCallbacks.keys()][0]!
+
+    expect(() => unmount()).not.toThrow()
+
+    expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingFrameId)
+    expect(frameCallbacks.size).toBe(0)
+    expect(fake.mocks.drawElements).not.toHaveBeenCalled()
+    expect(fake.liveCounts()).toEqual(NOTHING_ALIVE)
   })
 })
 
-describe('Viewer3D : échec de création du renderer', () => {
-  it('affiche le message de repli au lieu de planter, et ne lance aucune animation', () => {
-    rendererMock.failOnCreate = true
+describe('Viewer3D : échecs de création', () => {
+  it('shader refusé : message de repli, rien ne reste alloué, le journal du compilateur va dans la console', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    fakeOptions = { failCompile: 'fragment' }
+
+    const { container } = render(<Viewer3D />)
+
+    expect(screen.getByRole('status')).toHaveTextContent(/La 3D n'est pas disponible/)
+    expect(container.querySelector('canvas')).toBeNull()
+    expect(frameCallbacks.size).toBe(0)
+    expect(pageFakes[0]!.liveCounts()).toEqual(NOTHING_ALIVE) // le vertex shader déjà compilé a été libéré
+    expect(consoleError).toHaveBeenCalledOnce()
+    expect(consoleError.mock.calls[0]!.map(String).join(' ')).toContain(SHADER_LOG)
+  })
+
+  it('contexte refusé alors que la détection avait réussi : message de repli, pas de boucle', () => {
+    denyPageContext = true
 
     const { container } = render(<Viewer3D />)
 
@@ -166,130 +255,209 @@ describe('Viewer3D : échec de création du renderer', () => {
   })
 })
 
+describe('Viewer3D : perte et restauration du contexte', () => {
+  it('à la perte : appelle preventDefault (pour autoriser la restauration) et arrête la boucle', () => {
+    const { canvas } = mountViewer()
+    runFrame(0)
+    expect(frameCallbacks.size).toBe(1)
+
+    const lost = dispatchContextEvent(canvas, 'webglcontextlost')
+
+    expect(lost.defaultPrevented).toBe(true)
+    expect(frameCallbacks.size).toBe(0)
+  })
+
+  it('à la restauration : recrée les ressources et relance la boucle de dessin', () => {
+    const { canvas, fake } = mountViewer()
+    runFrame(0)
+    dispatchContextEvent(canvas, 'webglcontextlost')
+    fake.loseAllResources() // le GPU a tout détruit, sans qu'aucun delete* ait été appelé
+    expect(fake.liveCounts()).toEqual(NOTHING_ALIVE)
+    const drawsBefore = fake.mocks.drawElements.mock.calls.length
+
+    dispatchContextEvent(canvas, 'webglcontextrestored')
+
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
+    expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
+    expect(frameCallbacks.size).toBe(1)
+    runFrame(100)
+    expect(fake.mocks.drawElements.mock.calls.length).toBe(drawsBefore + 1)
+  })
+
+  it('un redimensionnement pendant la perte ne plante pas ; la taille est reprise à la restauration', () => {
+    const { canvas, fake } = mountViewer()
+    runFrame(0)
+    dispatchContextEvent(canvas, 'webglcontextlost')
+    fake.loseAllResources()
+
+    stubCanvasSize(canvas, 400, 200)
+    expect(() => fireResize()).not.toThrow()
+    expect(fake.mocks.viewport).not.toHaveBeenCalled()
+
+    dispatchContextEvent(canvas, 'webglcontextrestored')
+    expect(fake.mocks.viewport).toHaveBeenLastCalledWith(0, 0, 400, 200)
+  })
+
+  it('démonté pendant la perte : ne supprime rien (déjà détruit) et ne plante pas', () => {
+    const { canvas, unmount, fake } = mountViewer()
+    dispatchContextEvent(canvas, 'webglcontextlost')
+    fake.loseAllResources()
+
+    expect(() => unmount()).not.toThrow()
+
+    expect(fake.mocks.deleteBuffer).not.toHaveBeenCalled()
+    expect(fake.mocks.deleteProgram).not.toHaveBeenCalled()
+    expect(frameCallbacks.size).toBe(0)
+  })
+
+  it('restauration impossible (shaders refusés au retour) : bascule sur le message de repli', () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { canvas, fake } = mountViewer()
+    dispatchContextEvent(canvas, 'webglcontextlost')
+    fake.loseAllResources()
+    fake.mocks.getShaderParameter.mockReturnValue(false)
+
+    dispatchContextEvent(canvas, 'webglcontextrestored')
+
+    expect(screen.getByRole('status')).toHaveTextContent(/La 3D n'est pas disponible/)
+    expect(consoleError).toHaveBeenCalled()
+    expect(frameCallbacks.size).toBe(0)
+  })
+
+  it("reprend à la même rotation après restauration, sans saut dû au temps passé pendant la perte", () => {
+    const { canvas, fake } = mountViewer()
+    runFrame(0)
+    runFrame(100)
+    const modelBefore = fake.lastUniform('uModel')
+    dispatchContextEvent(canvas, 'webglcontextlost')
+    fake.loseAllResources()
+    dispatchContextEvent(canvas, 'webglcontextrestored')
+
+    runFrame(5000) // 5 secondes ont passé : la rotation ne doit pas avancer d'un coup
+
+    expect(fake.lastUniform('uModel')).toEqual(modelBefore)
+  })
+})
+
 describe('Viewer3D : rotation et prefers-reduced-motion', () => {
   it('fait tourner le cube quand le mouvement est autorisé', () => {
-    render(<Viewer3D />)
+    const { fake } = mountViewer()
     runFrame(0)
-    const cube = findCube(rendererMock.instances[0]!)
-    const before = cube.rotation.y
+    const before = fake.lastUniform('uModel')
 
     runFrame(50)
 
-    expect(cube.rotation.y).toBeGreaterThan(before)
+    expect(fake.lastUniform('uModel')).not.toEqual(before)
   })
 
   it("ne fait pas tourner le cube quand l'utilisateur demande moins de mouvement", () => {
     stubReducedMotion(true)
-    render(<Viewer3D />)
+    const { fake } = mountViewer()
     runFrame(0)
-    const cube = findCube(rendererMock.instances[0]!)
-    const before = cube.rotation.y
+    const before = fake.lastUniform('uModel')
 
     runFrame(50)
     runFrame(100)
 
-    expect(cube.rotation.y).toBe(before)
+    expect(fake.lastUniform('uModel')).toEqual(before)
     // La scène est tout de même dessinée à chaque image : le cube est visible, simplement fixe.
-    expect(rendererMock.instances[0]!.render).toHaveBeenCalledTimes(3)
+    expect(fake.mocks.drawElements).toHaveBeenCalledTimes(3)
   })
-})
 
-describe("Viewer3D : mouvement réduit modifié pendant l'exécution", () => {
   it("s'arrête puis reprend quand le réglage système change sans remonter le composant", () => {
     // La requête est la même, seul `matches` change : c'est ce que fait le navigateur.
     const query = { matches: false }
     vi.stubGlobal('matchMedia', () => query)
-    render(<Viewer3D />)
+    const { fake } = mountViewer()
     runFrame(0)
-    const cube = findCube(rendererMock.instances[0]!)
+    const firstModel = fake.lastUniform('uModel')
 
     runFrame(50)
-    const afterFirstTurn = cube.rotation.y
-    expect(afterFirstTurn).toBeGreaterThan(0)
+    const afterFirstTurn = fake.lastUniform('uModel')
+    expect(afterFirstTurn).not.toEqual(firstModel)
 
     query.matches = true
     runFrame(100)
-    expect(cube.rotation.y).toBe(afterFirstTurn)
+    expect(fake.lastUniform('uModel')).toEqual(afterFirstTurn)
 
     query.matches = false
     runFrame(150)
-    expect(cube.rotation.y).toBeGreaterThan(afterFirstTurn)
+    expect(fake.lastUniform('uModel')).not.toEqual(afterFirstTurn)
   })
 })
 
 describe('Viewer3D : taille et redimensionnement', () => {
-  it('donne au canvas une taille CSS par défaut, pour que Three.js ne le fasse pas grossir', () => {
-    const { container } = render(<Viewer3D />)
-    const canvas = container.querySelector('canvas')!
+  it('donne au canvas une taille CSS par défaut, pour que son contenu ne le fasse pas grossir', () => {
+    const { canvas } = mountViewer()
 
     expect(canvas).toHaveClass('block', 'h-full', 'w-full')
   })
 
   it("remplace la taille par défaut par celle de l'appelant au lieu de les cumuler", () => {
-    const { container } = render(<Viewer3D className="aspect-video w-full" />)
-    const canvas = container.querySelector('canvas')!
+    const { canvas } = mountViewer({ className: 'aspect-video w-full' })
 
     expect(canvas).toHaveClass('block', 'aspect-video', 'w-full')
     expect(canvas).not.toHaveClass('h-full')
   })
 
-  it('adapte le renderer et la caméra à la taille mesurée du canvas', () => {
-    const { container } = render(<Viewer3D />)
-    const canvas = container.querySelector('canvas')!
-    const renderer = rendererMock.instances[0]!
-    runFrame(0)
-    const camera = renderer.render.mock.calls[0]![1] as PerspectiveCamera
-    renderer.setSize.mockClear()
+  it('adapte la résolution du canvas, le viewport et la projection à la taille mesurée', () => {
+    vi.stubGlobal('devicePixelRatio', 1)
+    const { canvas, fake } = mountViewer()
 
     stubCanvasSize(canvas, 800, 400)
     fireResize()
 
-    // `false` : Three.js ne doit pas écrire le style CSS du canvas, la mise en page s'en charge.
-    expect(renderer.setSize).toHaveBeenCalledExactlyOnceWith(800, 400, false)
-    expect(camera.aspect).toBe(2)
+    expect(canvas.width).toBe(800)
+    expect(canvas.height).toBe(400)
+    expect(fake.mocks.viewport).toHaveBeenLastCalledWith(0, 0, 800, 400)
+    const projection = fake.lastUniform('uProjection')!
+    expect(projection[5]! / projection[0]!).toBeCloseTo(2) // aspect = 800 / 400
+  })
+
+  it('multiplie par le ratio de pixels pour rester net sur un écran dense', () => {
+    vi.stubGlobal('devicePixelRatio', 2)
+    const { canvas, fake } = mountViewer()
+
+    stubCanvasSize(canvas, 300, 200)
+    fireResize()
+
+    expect([canvas.width, canvas.height]).toEqual([600, 400])
+    expect(fake.mocks.viewport).toHaveBeenLastCalledWith(0, 0, 600, 400)
   })
 
   it('plafonne le ratio de pixels à 2', () => {
     vi.stubGlobal('devicePixelRatio', 3)
-    const { container } = render(<Viewer3D />)
-    const renderer = rendererMock.instances[0]!
-    stubCanvasSize(container.querySelector('canvas')!, 100, 100)
+    const { canvas } = mountViewer()
 
+    stubCanvasSize(canvas, 100, 100)
     fireResize()
 
-    expect(renderer.setPixelRatio).toHaveBeenLastCalledWith(2)
+    expect(canvas.width).toBe(200)
   })
 
-  it('ignore une taille nulle, sans toucher au renderer ni à la caméra', () => {
-    const { container } = render(<Viewer3D />)
-    const canvas = container.querySelector('canvas')!
-    const renderer = rendererMock.instances[0]!
-    runFrame(0)
-    const camera = renderer.render.mock.calls[0]![1] as PerspectiveCamera
-    const aspectBefore = camera.aspect
-    renderer.setSize.mockClear()
+  it('prend la taille déjà mesurée dès le montage, avant tout redimensionnement', () => {
+    // Le canvas a déjà une taille quand l'effet démarre (cas d'un parent déjà mis en page).
+    vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(640)
+    vi.spyOn(Element.prototype, 'clientHeight', 'get').mockReturnValue(480)
+    vi.stubGlobal('devicePixelRatio', 1)
+
+    const { fake } = mountViewer()
+
+    expect(fake.mocks.viewport).toHaveBeenCalledWith(0, 0, 640, 480)
+  })
+
+  it('ignore une taille nulle, sans toucher au viewport, à la projection ni au canvas', () => {
+    const { canvas, fake } = mountViewer()
+    const projectionCalls = fake.uniformHistory('uProjection').length
+    const widthBefore = canvas.width
 
     stubCanvasSize(canvas, 0, 300)
     fireResize()
     stubCanvasSize(canvas, 300, 0)
     fireResize()
 
-    expect(renderer.setSize).not.toHaveBeenCalled()
-    expect(camera.aspect).toBe(aspectBefore)
-  })
-})
-
-describe('Viewer3D : démontage avant la première image', () => {
-  it("annule l'image en attente : rien n'est dessiné et la boucle ne repart pas", () => {
-    const { unmount } = render(<Viewer3D />)
-    const renderer = rendererMock.instances[0]!
-    const pendingFrameId = [...frameCallbacks.keys()][0]!
-
-    expect(() => unmount()).not.toThrow()
-
-    expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingFrameId)
-    expect(frameCallbacks.size).toBe(0)
-    expect(renderer.render).not.toHaveBeenCalled()
-    expect(renderer.dispose).toHaveBeenCalledOnce()
+    expect(fake.mocks.viewport).not.toHaveBeenCalled()
+    expect(fake.uniformHistory('uProjection')).toHaveLength(projectionCalls)
+    expect(canvas.width).toBe(widthBefore)
   })
 })

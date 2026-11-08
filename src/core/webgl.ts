@@ -1,10 +1,10 @@
 /**
- * Détection de WebGL, sans React ni Three.js.
+ * Détection de WebGL 2, sans React.
  *
- * On teste AVANT de créer le renderer Three.js : `new WebGLRenderer()` lève une exception si le
- * navigateur ne fournit pas de contexte WebGL (ancien matériel, accélération désactivée, jsdom
- * dans les tests). Sans ce test préalable, la page entière planterait au lieu d'afficher un
- * message.
+ * On teste AVANT de monter le canvas de dessin : `getContext('webgl2')` renvoie `null` si le
+ * navigateur ne fournit pas de contexte WebGL 2 (ancien matériel, accélération désactivée, jsdom
+ * dans les tests). Sans ce test préalable, il faudrait deviner l'échec plus tard, au milieu de
+ * la création des ressources, au lieu d'afficher tout de suite un message clair.
  */
 
 /** Ce dont la détection a besoin : un moyen de fabriquer un canvas (injectable pour les tests). */
@@ -15,7 +15,7 @@ const defaultCanvasFactory: CanvasFactory = () => document.createElement('canvas
 export function isWebGLAvailable(createCanvas: CanvasFactory = defaultCanvasFactory): boolean {
   try {
     const canvas = createCanvas()
-    // Three.js ne gère plus que WebGL 2 depuis la r163 : inutile d'accepter un simple WebGL 1.
+    // Les shaders sont écrits en GLSL ES 3.00, qui n'existe qu'en WebGL 2 : un simple WebGL 1 ne suffit pas.
     const gl = canvas.getContext('webgl2')
     if (!gl) return false
     // Les navigateurs limitent le nombre de contextes WebGL vivants en même temps (une

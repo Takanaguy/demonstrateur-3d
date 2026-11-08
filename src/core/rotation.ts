@@ -1,5 +1,5 @@
 /**
- * Calcul de la rotation automatique, sans React ni Three.js.
+ * Calcul de la rotation automatique, sans React ni WebGL.
  *
  * On avance selon le temps écoulé (et non d'un pas fixe par image) : la vitesse reste la même
  * sur un écran à 60 Hz et sur un écran à 144 Hz.
