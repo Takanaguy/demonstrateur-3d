@@ -61,6 +61,10 @@ docs/
 
 Règle de dépendance : `core/` n'importe ni React ni Three.js. `viewer/` peut importer `core/`, jamais l'inverse. Pour réutiliser la 3D dans un autre projet, on reprend `viewer/Viewer3D.tsx` (et `core/`) : le composant remplit son parent, qui fixe sa taille.
 
+### Taille du composant
+
+Le parent doit avoir une taille, le canvas la remplit : par défaut `Viewer3D` est rendu avec `block h-full w-full`. On peut passer un `className` pour le dimensionner autrement (par exemple `aspect-video w-full`), mais il REMPLACE la taille par défaut au lieu de s'y ajouter : il doit donc fixer lui-même la taille. Sans aucune taille CSS, Three.js réécrirait la taille du canvas à chaque redimensionnement et il grossirait sans fin sur un écran à haute densité de pixels.
+
 ## Technologies
 
 React 19, Vite 8, TypeScript 6 (mode strict), Tailwind CSS 4, Three.js, Vitest avec React Testing Library et jsdom, ESLint 10. Mêmes versions d'outils que le projet frère « éditeur de présentations ».

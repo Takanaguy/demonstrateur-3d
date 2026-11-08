@@ -1,6 +1,7 @@
 {
   "name": "demonstrateur-3d",
   "private": true,
+  "description": "Démonstrateur 3D pédagogique dans le navigateur, construit avec React et Three.js.",
   "version": "0.0.0",
   "type": "module",
   "scripts": {

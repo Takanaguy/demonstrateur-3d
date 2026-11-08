@@ -7,20 +7,35 @@ import { createCubeScene } from './cubeScene'
 /** Tours par seconde : un tour complet en dix secondes, une rotation lente et pas distrayante. */
 const ROTATION_TURNS_PER_SECOND = 0.1
 
+/**
+ * Taille par défaut : le canvas remplit son parent. Sans taille CSS, un canvas prend celle de ses
+ * attributs `width` et `height`, que Three.js réécrit à chaque redimensionnement (taille CSS
+ * multipliée par le ratio de pixels) : sur un écran dense, le canvas grossirait alors sans fin.
+ */
+const DEFAULT_SIZE_CLASSES = 'h-full w-full'
+
 interface Viewer3DProps {
-  /** Le composant remplit son parent : c'est le parent qui fixe la taille. */
+  /**
+   * Classes Tailwind qui dimensionnent le composant. Elles REMPLACENT la taille par défaut
+   * (`h-full w-full`) au lieu de s'y ajouter, pour que deux classes contradictoires ne se
+   * disputent jamais : l'appelant qui en passe doit donc fixer lui-même une taille.
+   */
   className?: string
 }
 
 /**
  * Possède un `<canvas>` et y affiche la scène 3D.
  *
+ * Contrat de taille : le parent doit avoir une taille, le canvas la remplit (`block h-full w-full`
+ * par défaut). Three.js ne touche jamais au style CSS du canvas : c'est la mise en page qui
+ * décide de la taille affichée, et le composant adapte ensuite la résolution et la caméra.
+ *
  * Le cycle de vie du renderer est entièrement dans le `useEffect` : tout ce qu'il crée, il le
  * détruit dans sa fonction de nettoyage. C'est indispensable en StrictMode, où React monte,
  * démonte puis remonte le composant en développement : sans nettoyage, on cumulerait des
  * renderers et des boucles d'animation.
  */
-export function Viewer3D({ className = '' }: Viewer3DProps) {
+export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Initialiseur paresseux : la détection ne tourne qu'au premier rendu, pas à chacun.
   const [webglAvailable] = useState(() => isWebGLAvailable())
@@ -35,8 +50,10 @@ export function Viewer3D({ className = '' }: Viewer3DProps) {
     try {
       renderer = new WebGLRenderer({ canvas, antialias: true })
     } catch {
-      // Un seul rendu supplémentaire, dans un cas d'erreur rare : la règle contre le setState
-      // dans un effet vise les boucles de rendu, qui sont impossibles ici (on sort juste après).
+      // La règle `react-hooks/set-state-in-effect` signale tout setState appelé directement dans
+      // un effet, car il déclenche un rendu supplémentaire (risque de rendus en cascade). Ici c'est
+      // voulu : on ne sait si le renderer s'initialise qu'en l'essayant, et le rendu en plus
+      // n'arrive qu'une fois, dans ce cas d'échec rare (l'effet s'arrête juste après).
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setRendererFailed(true)
       return

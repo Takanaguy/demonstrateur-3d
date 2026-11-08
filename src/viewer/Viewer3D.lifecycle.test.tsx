@@ -1,13 +1,18 @@
 import { render, screen } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { BoxGeometry, Mesh, MeshStandardMaterial, type Scene } from 'three'
+import { BoxGeometry, Mesh, MeshStandardMaterial, type PerspectiveCamera, type Scene } from 'three'
 import { Viewer3D } from './Viewer3D'
 
 // On remplace seulement le renderer (il a besoin de WebGL, absent de jsdom). Tout le reste de
 // Three.js est réel : la scène, le cube, la géométrie et le matériau sont de vrais objets, dont
 // on surveille la libération.
 const rendererMock = vi.hoisted(() => ({
-  instances: [] as { render: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }[],
+  instances: [] as {
+    render: ReturnType<typeof vi.fn>
+    dispose: ReturnType<typeof vi.fn>
+    setPixelRatio: ReturnType<typeof vi.fn>
+    setSize: ReturnType<typeof vi.fn>
+  }[],
   failOnCreate: false,
 }))
 
@@ -37,6 +42,8 @@ const cancelAnimationFrameMock = vi.fn((id: number) => {
 })
 const observerDisconnect = vi.fn()
 const observerObserve = vi.fn()
+// Rappels des faux ResizeObserver créés : le test décide quand « le navigateur » signale un changement de taille.
+let resizeCallbacks: ResizeObserverCallback[]
 
 /** Joue l'image en attente, à l'instant `time` (en millisecondes). */
 function runFrame(time: number) {
@@ -52,6 +59,17 @@ function stubReducedMotion(reduce: boolean) {
   }))
 }
 
+/** Fixe la taille que jsdom (qui ne fait pas de mise en page) devrait renvoyer pour le canvas. */
+function stubCanvasSize(canvas: HTMLCanvasElement, width: number, height: number) {
+  Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: width })
+  Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: height })
+}
+
+/** Simule le signal du ResizeObserver, comme après un changement de taille dans la page. */
+function fireResize() {
+  for (const callback of resizeCallbacks) callback([], {} as ResizeObserver)
+}
+
 /** Retrouve le cube dans la scène passée au renderer. */
 function findCube(renderer: (typeof rendererMock.instances)[number]): Mesh {
   const scene = renderer.render.mock.calls[0]?.[0] as Scene
@@ -65,6 +83,7 @@ beforeEach(() => {
   rendererMock.failOnCreate = false
   frameCallbacks = new Map()
   nextFrameId = 1
+  resizeCallbacks = []
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
     const id = nextFrameId++
     frameCallbacks.set(id, callback)
@@ -74,6 +93,9 @@ beforeEach(() => {
   vi.stubGlobal(
     'ResizeObserver',
     class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallbacks.push(callback)
+      }
       observe = observerObserve
       disconnect = observerDisconnect
       unobserve = vi.fn()
@@ -169,5 +191,105 @@ describe('Viewer3D : rotation et prefers-reduced-motion', () => {
     expect(cube.rotation.y).toBe(before)
     // La scène est tout de même dessinée à chaque image : le cube est visible, simplement fixe.
     expect(rendererMock.instances[0]!.render).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe("Viewer3D : mouvement réduit modifié pendant l'exécution", () => {
+  it("s'arrête puis reprend quand le réglage système change sans remonter le composant", () => {
+    // La requête est la même, seul `matches` change : c'est ce que fait le navigateur.
+    const query = { matches: false }
+    vi.stubGlobal('matchMedia', () => query)
+    render(<Viewer3D />)
+    runFrame(0)
+    const cube = findCube(rendererMock.instances[0]!)
+
+    runFrame(50)
+    const afterFirstTurn = cube.rotation.y
+    expect(afterFirstTurn).toBeGreaterThan(0)
+
+    query.matches = true
+    runFrame(100)
+    expect(cube.rotation.y).toBe(afterFirstTurn)
+
+    query.matches = false
+    runFrame(150)
+    expect(cube.rotation.y).toBeGreaterThan(afterFirstTurn)
+  })
+})
+
+describe('Viewer3D : taille et redimensionnement', () => {
+  it('donne au canvas une taille CSS par défaut, pour que Three.js ne le fasse pas grossir', () => {
+    const { container } = render(<Viewer3D />)
+    const canvas = container.querySelector('canvas')!
+
+    expect(canvas).toHaveClass('block', 'h-full', 'w-full')
+  })
+
+  it("remplace la taille par défaut par celle de l'appelant au lieu de les cumuler", () => {
+    const { container } = render(<Viewer3D className="aspect-video w-full" />)
+    const canvas = container.querySelector('canvas')!
+
+    expect(canvas).toHaveClass('block', 'aspect-video', 'w-full')
+    expect(canvas).not.toHaveClass('h-full')
+  })
+
+  it('adapte le renderer et la caméra à la taille mesurée du canvas', () => {
+    const { container } = render(<Viewer3D />)
+    const canvas = container.querySelector('canvas')!
+    const renderer = rendererMock.instances[0]!
+    runFrame(0)
+    const camera = renderer.render.mock.calls[0]![1] as PerspectiveCamera
+    renderer.setSize.mockClear()
+
+    stubCanvasSize(canvas, 800, 400)
+    fireResize()
+
+    // `false` : Three.js ne doit pas écrire le style CSS du canvas, la mise en page s'en charge.
+    expect(renderer.setSize).toHaveBeenCalledExactlyOnceWith(800, 400, false)
+    expect(camera.aspect).toBe(2)
+  })
+
+  it('plafonne le ratio de pixels à 2', () => {
+    vi.stubGlobal('devicePixelRatio', 3)
+    const { container } = render(<Viewer3D />)
+    const renderer = rendererMock.instances[0]!
+    stubCanvasSize(container.querySelector('canvas')!, 100, 100)
+
+    fireResize()
+
+    expect(renderer.setPixelRatio).toHaveBeenLastCalledWith(2)
+  })
+
+  it('ignore une taille nulle, sans toucher au renderer ni à la caméra', () => {
+    const { container } = render(<Viewer3D />)
+    const canvas = container.querySelector('canvas')!
+    const renderer = rendererMock.instances[0]!
+    runFrame(0)
+    const camera = renderer.render.mock.calls[0]![1] as PerspectiveCamera
+    const aspectBefore = camera.aspect
+    renderer.setSize.mockClear()
+
+    stubCanvasSize(canvas, 0, 300)
+    fireResize()
+    stubCanvasSize(canvas, 300, 0)
+    fireResize()
+
+    expect(renderer.setSize).not.toHaveBeenCalled()
+    expect(camera.aspect).toBe(aspectBefore)
+  })
+})
+
+describe('Viewer3D : démontage avant la première image', () => {
+  it("annule l'image en attente : rien n'est dessiné et la boucle ne repart pas", () => {
+    const { unmount } = render(<Viewer3D />)
+    const renderer = rendererMock.instances[0]!
+    const pendingFrameId = [...frameCallbacks.keys()][0]!
+
+    expect(() => unmount()).not.toThrow()
+
+    expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingFrameId)
+    expect(frameCallbacks.size).toBe(0)
+    expect(renderer.render).not.toHaveBeenCalled()
+    expect(renderer.dispose).toHaveBeenCalledOnce()
   })
 })
