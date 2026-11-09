@@ -123,15 +123,18 @@ export function createIndexedMesh(gl: WebGL2RenderingContext, mesh: IndexedMeshD
 /** Nombre maximal de lectures de `getError` en une fois : évite une boucle sans fin si un contexte défaillant répond toujours une erreur. */
 const MAX_ERROR_READS = 32
 
-/** Lit et efface les erreurs WebGL en attente. */
-function drainGlErrors(gl: WebGL2RenderingContext): void {
+/**
+ * Lit et efface les erreurs WebGL en attente. Exportée avec `throwIfGlError` pour que les séries de
+ * lignes (lineRenderer.ts) détectent un manque de mémoire GPU de la même façon, sans copier la logique.
+ */
+export function drainGlErrors(gl: WebGL2RenderingContext): void {
   for (let i = 0; i < MAX_ERROR_READS && gl.getError() !== gl.NO_ERROR; i++) {
     // Rien à faire : lire suffit à effacer le drapeau.
   }
 }
 
 /** Lève une erreur claire si WebGL a signalé un échec depuis le dernier vidage. */
-function throwIfGlError(gl: WebGL2RenderingContext): void {
+export function throwIfGlError(gl: WebGL2RenderingContext): void {
   const code = gl.getError()
   if (code === gl.NO_ERROR) return
   if (code === gl.OUT_OF_MEMORY) {

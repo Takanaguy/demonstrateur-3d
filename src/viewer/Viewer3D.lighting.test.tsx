@@ -50,9 +50,9 @@ describe('Viewer3D : éclairage', () => {
     expect(fake.lastUniform('uLightPosition')).toEqual([-4, 2, 6])
     expect(container.querySelector('canvas')).toBe(canvas)
     expect(env.getContext.mock.calls.length).toBe(contextRequests)
-    expect(fake.mocks.createProgram).toHaveBeenCalledOnce()
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(fake.mocks.createVertexArray).toHaveBeenCalledOnce() // le maillage n'est pas renvoyé
-    expect(fake.liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(fake.liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
   })
 
   it('un nouveau rendu avec les MÊMES réglages ne les renvoie pas au GPU', () => {
@@ -74,7 +74,7 @@ describe('Viewer3D : éclairage', () => {
 
     env.loseAndRestoreContext(container.querySelector('canvas')!, fake)
 
-    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(4) // deux au départ, deux à la restauration (objet et lignes)
     expect(fake.uniformHistory('uLightPosition').length).toBeGreaterThan(sentBefore)
     expect(fake.lastUniform('uLightingModel')).toEqual([2])
     expect(fake.lastUniform('uLightPosition')).toEqual([1.5, -3, 8])

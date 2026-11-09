@@ -1,3 +1,5 @@
+import lineFragmentSource from './line.frag?raw'
+import lineVertexSource from './line.vert?raw'
 import fragmentSource from './mesh.frag?raw'
 import vertexSource from './mesh.vert?raw'
 
@@ -93,5 +95,46 @@ describe('shaders du maillage (texte GLSL)', () => {
 
   it('la couleur finale est bornée à 1 explicitement', () => {
     expect(fragment).toMatch(/min\(ambientPart \+ diffusePart \+ specularPart, vec3\(1\.0\)\)/)
+  })
+})
+
+describe('shaders des lignes (texte GLSL)', () => {
+  const lineVertex = lineVertexSource.replace(/\r\n/g, '\n')
+  const lineFragment = lineFragmentSource.replace(/\r\n/g, '\n')
+
+  it.each([
+    ['line.vert', lineVertexSource],
+    ['line.frag', lineFragmentSource],
+  ])('%s commence par #version 300 es, tout en première ligne (sinon la compilation échoue)', (_name, source) => {
+    expect(source).toMatch(/^#version 300 es\r?\n/)
+  })
+
+  it('le vertex shader lit la position en location 0, comme le buffer des séries de lignes (lineRenderer.ts)', () => {
+    expect(lineVertex).toMatch(/layout\(location = 0\) in vec3 aPosition;/)
+    // Pas de normale : des traits ne sont pas éclairés.
+    expect(lineVertex).not.toContain('aNormal')
+  })
+
+  it.each([
+    ['uModel', 'mat4', lineVertex],
+    ['uView', 'mat4', lineVertex],
+    ['uProjection', 'mat4', lineVertex],
+    ['uColor', 'vec3', lineFragment],
+  ])('déclare « uniform %s » (%s) dans le bon shader', (name, type, source) => {
+    expect(source).toContain(`uniform ${type} ${name};`)
+  })
+
+  it('place le sommet comme mesh.vert : position dans le monde (modèle), puis vue, puis projection', () => {
+    expect(lineVertex).toMatch(/vec4 worldPosition = uModel \* vec4\(aPosition, 1\.0\);/)
+    expect(lineVertex).toMatch(/gl_Position = uProjection \* uView \* worldPosition;/)
+    // Même expression que le shader de l'objet : les profondeurs concordent, sinon le polygon offset ne suffirait pas.
+    expect(vertex).toMatch(/gl_Position = uProjection \* uView \* worldPosition;/)
+  })
+
+  it('le fragment shader déclare une précision (obligatoire) et écrit la couleur opaque, sans éclairage', () => {
+    expect(lineFragment).toMatch(/^precision (mediump|highp) float;$/m)
+    expect(lineFragment).toMatch(/out vec4 outColor;/)
+    expect(lineFragment).toMatch(/outColor = vec4\(uColor, 1\.0\);/)
+    expect(lineFragment).not.toMatch(/uLight|normalize|dot\(/)
   })
 })

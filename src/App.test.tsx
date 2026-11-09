@@ -21,7 +21,7 @@ afterEach(() => {
 })
 
 const TETRAHEDRON = 'v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n'
-const ONE_MESH_ALIVE = { shader: 0, program: 1, buffer: 3, vertexArray: 1 }
+const ONE_MESH_ALIVE = { shader: 0, program: 2, buffer: 3, vertexArray: 1 }
 
 function objFile(text: string, name = 'test.obj') {
   return new File([text], name, { type: 'model/obj' })
@@ -85,7 +85,7 @@ describe('App : panneau de choix', () => {
 
     expect(container.querySelector('canvas')).toBe(canvas)
     expect(env.getContext.mock.calls.length).toBe(contextRequests)
-    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledOnce()
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(env.pageFake().liveCounts()).toEqual(ONE_MESH_ALIVE)
   })
 
@@ -348,7 +348,7 @@ describe('App : éclairage', () => {
 
     expect(container.querySelector('canvas')).toBe(canvas)
     expect(env.getContext.mock.calls.length).toBe(contextRequests)
-    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledOnce()
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(env.pageFake().mocks.createVertexArray).toHaveBeenCalledOnce()
   })
 
@@ -468,7 +468,7 @@ describe('App : vue et caméra', () => {
 
     expect(container.querySelector('canvas')).toBe(canvas)
     expect(env.getContext.mock.calls.length).toBe(contextRequests)
-    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledOnce()
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(env.pageFake().mocks.createVertexArray).toHaveBeenCalledOnce()
   })
 
@@ -544,6 +544,231 @@ describe('App : vue et caméra', () => {
 
     expect(fake.isEnabled(fake.gl.CULL_FACE)).toBe(true)
     expect(fake.lastUniform('uCameraPosition')).toEqual(cameraBefore)
+  })
+})
+
+describe('App : fil de fer et aides', () => {
+  let frameTime = 0
+  beforeEach(() => {
+    frameTime = 0
+  })
+  /** Joue une image d'animation : c'est là que le fil de fer et les aides sont créés et dessinés. */
+  function frame() {
+    frameTime += 16
+    env.runFrame(frameTime)
+  }
+  /** Les dessins faits depuis le dernier appel, sous la forme [type, nombre de sommets ou d'indices]. */
+  function drawsSinceLast() {
+    const fake = env.pageFake()
+    const draws = fake.draws().map((call) => [call.call, call.count] as const)
+    fake.clearDraws()
+    return draws
+  }
+
+  it('au départ : « Plein » est coché, aucune aide cochée, aucune alerte, et le GPU ne dessine que l\'objet', () => {
+    render(<App />)
+
+    frame()
+
+    expect(screen.getByRole('radio', { name: 'Plein' })).toBeChecked()
+    for (const name of ['Normales des sommets', 'Boîte englobante', 'Grille', 'Axes']) {
+      expect(screen.getByRole('checkbox', { name })).not.toBeChecked()
+    }
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(drawsSinceLast()).toEqual([['drawElements', 36]])
+  })
+
+  it('choisir « Fil de fer » dessine les 18 arêtes du cube sans remplissage, « Plein et fil de fer » les deux', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    frame()
+    drawsSinceLast()
+
+    await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+    frame()
+    expect(drawsSinceLast()).toEqual([['drawArrays', 36]])
+
+    await user.click(screen.getByRole('radio', { name: 'Plein et fil de fer' }))
+    frame()
+    expect(drawsSinceLast()).toEqual([
+      ['drawElements', 36],
+      ['drawArrays', 36],
+    ])
+
+    await user.click(screen.getByRole('radio', { name: 'Plein' }))
+    frame()
+    expect(drawsSinceLast()).toEqual([['drawElements', 36]])
+  })
+
+  it('cocher les aides les dessine : normales, boîte, grille, axes', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    frame()
+    drawsSinceLast()
+
+    for (const name of ['Normales des sommets', 'Boîte englobante', 'Grille', 'Axes']) {
+      await user.click(screen.getByRole('checkbox', { name }))
+    }
+    frame()
+
+    expect(drawsSinceLast()).toEqual([
+      ['drawElements', 36],
+      ['drawArrays', 48],
+      ['drawArrays', 24],
+      ['drawArrays', 52],
+      ['drawArrays', 2],
+      ['drawArrays', 2],
+      ['drawArrays', 2],
+    ])
+  })
+
+  it('changer de forme garde le fil de fer et dessine les arêtes de la NOUVELLE forme (la sphère : 3 312 segments)', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+    frame()
+    drawsSinceLast()
+
+    await user.click(screen.getByRole('radio', { name: 'Sphère' }))
+    frame()
+
+    expect(screen.getByRole('radio', { name: 'Fil de fer' })).toBeChecked()
+    expect(drawsSinceLast()).toEqual([['drawArrays', 2 * 3312]])
+  })
+
+  it('changer les options d\'affichage ne recrée ni le canvas, ni le contexte, ni les programmes, ni le maillage', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const canvas = container.querySelector('canvas')
+    const contextRequests = env.getContext.mock.calls.length
+
+    await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Grille' }))
+    frame()
+
+    expect(container.querySelector('canvas')).toBe(canvas)
+    expect(env.getContext.mock.calls.length).toBe(contextRequests)
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledTimes(2) // l'objet et les lignes, une fois
+    expect(env.pageFake().mocks.createVertexArray).toHaveBeenCalledTimes(3) // maillage, arêtes, grille
+  })
+
+  it('après une perte de contexte, le fil de fer et les aides choisis reviennent', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Plein et fil de fer' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Axes' }))
+    frame()
+    const fake = env.pageFake()
+    drawsSinceLast()
+
+    env.loseAndRestoreContext(container.querySelector('canvas')!, fake)
+    frame()
+
+    expect(drawsSinceLast()).toEqual([
+      ['drawElements', 36],
+      ['drawArrays', 36],
+      ['drawArrays', 2],
+      ['drawArrays', 2],
+      ['drawArrays', 2],
+    ])
+  })
+
+  describe('quand le GPU refuse la première aide créée (mémoire saturée)', () => {
+    beforeEach(() => {
+      vi.unstubAllGlobals()
+      // Le cube fait les appels 1 à 3 à bufferData : la première aide créée fait le 4e, qui manque de mémoire.
+      env = installFakeWebGL({ bufferDataError: { call: 4, code: 1285 } })
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+    })
+
+    it('fil de fer : une alerte explique, l\'option revient à « Plein », et l\'objet plein reste à l\'écran', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+
+      await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+      frame()
+
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Le fil de fer n'a pas pu être affiché.")
+      expect(alert).toHaveTextContent(/Mémoire graphique insuffisante/)
+      expect(alert).toHaveTextContent("L'affichage plein est conservé.")
+      // L'interface redevient cohérente avec l'écran.
+      expect(screen.getByRole('radio', { name: 'Plein' })).toBeChecked()
+      expect(screen.getByRole('radio', { name: 'Fil de fer' })).not.toBeChecked()
+      expect(drawsSinceLast()).toEqual([['drawElements', 36]])
+    })
+
+    it('une autre aide refusée (la grille) est décochée, les autres choix de l\'utilisateur sont gardés', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+      await user.click(screen.getByRole('checkbox', { name: 'Grille' }))
+      await user.click(screen.getByRole('checkbox', { name: 'Masquer les faces vues de dos (culling)' }))
+
+      frame()
+
+      expect(await screen.findByRole('alert')).toHaveTextContent("La grille n'a pas pu être dessinée.")
+      expect(screen.getByRole('checkbox', { name: 'Grille' })).not.toBeChecked()
+      expect(screen.getByRole('checkbox', { name: 'Masquer les faces vues de dos (culling)' })).toBeChecked()
+    })
+
+    it('l\'alerte disparaît dès que l\'utilisateur touche de nouveau aux options', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+      await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+      frame()
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('checkbox', { name: 'Axes' }))
+
+      expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    it('on peut réessayer : choisir de nouveau « Fil de fer » le dessine (le 2e essai passe)', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+      await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+      frame()
+      await screen.findByRole('alert')
+      drawsSinceLast()
+
+      await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+      frame()
+
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.getByRole('radio', { name: 'Fil de fer' })).toBeChecked()
+      expect(drawsSinceLast()).toEqual([['drawArrays', 36]])
+    })
+
+    it('changer de maillage efface l\'alerte : un message sur l\'ancien objet ne reste pas à côté du nouveau', async () => {
+      const user = userEvent.setup()
+      render(<App />)
+      await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+      frame()
+      expect(await screen.findByRole('alert')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('radio', { name: 'Sphère' }))
+
+      expect(screen.queryByRole('alert')).toBeNull()
+      // Les options remises à « Plein » par le repli, elles, restent.
+      expect(screen.getByRole('radio', { name: 'Plein' })).toBeChecked()
+    })
+  })
+
+  it('deux aides refusées dans la même image : les deux messages sont affichés, pas seulement le dernier', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Fil de fer' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Grille' }))
+    env.pageFake().mocks.createBuffer.mockReturnValue(null) // plus aucun buffer : le fil de fer ET la grille échouent
+
+    frame()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("Le fil de fer n'a pas pu être affiché.")
+    expect(alert).toHaveTextContent("La grille n'a pas pu être dessinée.")
+    expect(screen.getByRole('radio', { name: 'Plein' })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: 'Grille' })).not.toBeChecked()
   })
 })
 

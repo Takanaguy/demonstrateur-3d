@@ -1,5 +1,5 @@
 import { PROGRAM_LOG, SHADER_LOG, createFakeGl } from '../test/fakeGl'
-import { createProgram, createShader } from './shader'
+import { createProgram, createShader, findUniforms } from './shader'
 
 const VERT = 'void main() {}'
 const FRAG = 'void main() {}'
@@ -101,5 +101,27 @@ describe('createProgram', () => {
     expect(() => createProgram(gl, VERT, FRAG)).toThrow(/Impossible de créer le programme/)
 
     expect(liveCounts().shader).toBe(0)
+  })
+})
+
+describe('findUniforms', () => {
+  it("renvoie l'emplacement de chaque uniform demandé, par son nom", () => {
+    const { gl, mocks } = createFakeGl()
+    const program = createProgram(gl, VERT, FRAG)
+
+    const locations = findUniforms(gl, program, ['uModel', 'uColor'])
+
+    expect(Object.keys(locations)).toEqual(['uModel', 'uColor'])
+    expect(mocks.getUniformLocation).toHaveBeenCalledWith(program, 'uModel')
+    expect(mocks.getUniformLocation).toHaveBeenCalledWith(program, 'uColor')
+    expect(locations.uModel).not.toBe(locations.uColor)
+  })
+
+  it("lève une erreur qui nomme l'uniform introuvable (WebGL, lui, ignorerait l'envoi sans rien dire)", () => {
+    const { gl, mocks } = createFakeGl()
+    const program = createProgram(gl, VERT, FRAG)
+    mocks.getUniformLocation.mockImplementation((_program, name) => (name === 'uAbsent' ? null : { name }) as never)
+
+    expect(() => findUniforms(gl, program, ['uModel', 'uAbsent'])).toThrow(/« uAbsent » introuvable/)
   })
 })

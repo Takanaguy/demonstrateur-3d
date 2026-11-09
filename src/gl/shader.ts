@@ -81,3 +81,22 @@ export function createProgram(
   releaseShaders()
   return program
 }
+
+/**
+ * Retrouve l'emplacement de chaque uniform. Un nom introuvable est une faute de frappe (ou un
+ * uniform que le compilateur a jugé inutile et retiré) : on le signale tout de suite, car WebGL
+ * ignorerait sinon sans bruit l'envoi de la valeur et l'objet s'afficherait faux.
+ */
+export function findUniforms<Name extends string>(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  names: readonly Name[],
+): Record<Name, WebGLUniformLocation> {
+  const locations = {} as Record<Name, WebGLUniformLocation>
+  for (const name of names) {
+    const location = gl.getUniformLocation(program, name)
+    if (!location) throw new Error(`Uniform « ${name} » introuvable dans le programme.`)
+    locations[name] = location
+  }
+  return locations
+}

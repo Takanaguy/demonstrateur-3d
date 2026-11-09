@@ -1,6 +1,6 @@
 # Démonstrateur 3D
 
-Démonstrateur 3D pédagogique, dans le navigateur : on peut y charger des formes de base ou des fichiers OBJ, changer le modèle d'éclairage et tourner autour de l'objet à la souris, au doigt ou au clavier ; à terme, on pourra aussi afficher le fil de fer, les normales et la boîte englobante. Il s'inspire d'un projet de cours d'OpenGL écrit sans moteur 3D, refait ici avec les technologies du web : du WebGL2 écrit à la main, sans Three.js ni autre bibliothèque 3D.
+Démonstrateur 3D pédagogique, dans le navigateur : on peut y charger des formes de base ou des fichiers OBJ, changer le modèle d'éclairage, tourner autour de l'objet à la souris, au doigt ou au clavier, et afficher le fil de fer, les normales, la boîte englobante, une grille et les axes. Il s'inspire d'un projet de cours d'OpenGL écrit sans moteur 3D, refait ici avec les technologies du web : du WebGL2 écrit à la main, sans Three.js ni autre bibliothèque 3D.
 
 Projet personnel de Tanguy Horard. Il pourra plus tard être intégré comme élément dans un autre projet à lui (un éditeur de présentations) : c'est pour cela que la logique est séparée de l'interface (voir [Structure](#structure-des-dossiers)).
 
@@ -50,12 +50,21 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 - Après une perte de contexte WebGL, la caméra COURANTE et les options de vue reviennent.
 - 617 tests (Vitest) répartis dans 25 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 258,58 kB (82,43 kB compressés en gzip), CSS 12,77 kB (3,52 kB compressés).
 
+**Fait (ticket 4b, fil de fer et aides en traits)**
+- Trois modes d'affichage dans le panneau de la vue : Plein, Fil de fer (les arêtes de tous les triangles, sans remplissage) et Plein et fil de fer. Un cube montre 18 segments : ses 12 arêtes et les 6 diagonales de la triangulation de ses faces (c'est un fil de fer de maillage, on veut voir les triangles).
+- Quatre aides à cocher : normales des sommets (un segment par sommet, échantillonné au-delà de 4 000 sommets), boîte englobante, grille horizontale sous l'objet, axes X rouge, Y vert, Z bleu.
+- Un second programme WebGL, dédié aux traits (`gl/lineRenderer.ts`, `line.vert`, `line.frag`), non éclairé, qui reçoit les mêmes matrices de vue et de projection que celui de l'objet. Les traits font 1 pixel de large.
+- En mode combiné, un polygon offset repousse légèrement les surfaces en arrière : les traits ne sont pas mangés par le remplissage (z-fighting).
+- Les arêtes sont calculées au premier passage en fil de fer, une seule fois par maillage, sur le maillage normalisé (ce qu'on voit). Au-delà de 500 000 triangles elles sont refusées (voir la décision 19).
+- Si le GPU refuse une aide (mémoire saturée), l'affichage revient à Plein, l'option se décoche et un message d'alerte s'affiche ; l'objet reste visible.
+- Après une perte de contexte WebGL, les aides choisies reviennent.
+- 804 tests (Vitest) répartis dans 29 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 270,34 kB (85,87 kB compressés en gzip), CSS 12,82 kB (3,53 kB compressés).
+
 **Pas encore fait**
-- Affichage en fil de fer, des normales, de la boîte englobante, de la grille et des axes (ticket 4b ; la boîte est calculée, pas encore dessinée).
 - Pincement à deux doigts pour zoomer, déplacement latéral (pan).
 - Textures (les coordonnées `vt` d'un fichier OBJ sont lues puis ignorées) et matériaux (`.mtl`).
 - Intégration dans l'éditeur de présentations.
-- Vérification dans un vrai navigateur : les tests tournent dans jsdom, qui n'a pas de WebGL. Les maths, la géométrie, l'analyseur OBJ et les appels WebGL (vérifiés avec un faux contexte) sont testés, mais le rendu réel (formes visibles, éclairage des deux faces, rotation, redimensionnement, chargement d'un vrai fichier OBJ) reste à regarder à la main.
+- Vérification dans un vrai navigateur : les tests tournent dans jsdom, qui n'a pas de WebGL. Les maths, la géométrie, l'analyseur OBJ et les appels WebGL (vérifiés avec un faux contexte) sont testés, mais le rendu réel (formes visibles, éclairage des deux faces, rotation, redimensionnement, chargement d'un vrai fichier OBJ, traits du fil de fer visibles sur les surfaces grâce au polygon offset, couleurs et lisibilité des aides, coût du fil de fer sur un gros fichier) reste à regarder à la main.
 
 ## Lancer le projet
 
@@ -99,10 +108,13 @@ src/
              maillage commun, boîte englobante, normalisation, normales lisses (mesh.ts),
              cube (cube.ts), plan, sphère, cône (shapes.ts), analyseur OBJ (obj.ts),
              couleurs (color.ts), réglages et formules d'éclairage (lighting.ts), caméra
-             orbitale (camera.ts), options de vue (viewOptions.ts), rotation, détection de WebGL.
+             orbitale (camera.ts), options de vue (viewOptions.ts), aides en traits : arêtes,
+             normales, boîte, grille, axes (overlays.ts), rotation, détection de WebGL.
   gl/        Tout ce qui parle à WebGL, sans React : compilation des shaders (shader.ts),
-             buffers et VAO (buffers.ts), dessin d'un maillage (meshRenderer.ts).
-    shaders/   Les shaders en GLSL ES 3.00 : mesh.vert (sommets) et mesh.frag (fragments).
+             buffers et VAO (buffers.ts), séries de lignes et leur programme (lineRenderer.ts),
+             dessin d'un maillage et de ses aides (meshRenderer.ts).
+    shaders/   Les shaders en GLSL ES 3.00 : mesh.vert et mesh.frag (l'objet éclairé), line.vert
+               et line.frag (les traits).
   ui/        Le panneau de choix du maillage (MeshPanel.tsx), l'état « quel maillage afficher »
              avec le chargement des fichiers (useMeshSelection.ts), le panneau d'éclairage
              (LightingPanel.tsx) et le panneau de la vue (ViewPanel.tsx).
@@ -120,11 +132,21 @@ Règle de dépendance : `core/` n'importe ni React ni WebGL. `gl/` peut importer
 
 ## Comment un objet arrive à l'écran (le pipeline WebGL)
 
-1. **Shaders.** Deux petits programmes écrits en GLSL tournent sur le GPU : le *vertex shader* (`mesh.vert`) place chaque sommet à l'écran, le *fragment shader* (`mesh.frag`) choisit la couleur de chaque pixel (éclairage : Lambert, Blinn-Phong ou gaussien, voir plus bas). `gl/shader.ts` les compile et les lie en un *programme*, et lit le journal du compilateur si cela échoue.
+1. **Shaders.** Deux petits programmes écrits en GLSL tournent sur le GPU : le *vertex shader* (`mesh.vert`) place chaque sommet à l'écran, le *fragment shader* (`mesh.frag`) choisit la couleur de chaque pixel (éclairage : Lambert, Blinn-Phong ou gaussien, voir plus bas). `gl/shader.ts` les compile et les lie en un *programme*, et lit le journal du compilateur si cela échoue. Il y a DEUX programmes : celui de l'objet éclairé (`mesh.vert` et `mesh.frag`) et celui des traits (`line.vert` et `line.frag`), qui ne fait que placer des points et leur donner une couleur unie.
 2. **Buffers et VAO.** Les sommets du maillage (positions, normales) et ses indices (3 par triangle ; 16 bits, ou 32 bits au-delà de 65 535 sommets) sont copiés dans des *buffers*, des blocs de mémoire du GPU. Un *VAO* retient quel buffer alimente quelle entrée du shader : on le configure une fois, puis un seul appel le rebranche à chaque image.
 3. **Matrices.** Trois matrices 4x4 transforment les points : *modèle* (la rotation de l'objet sur lui-même), *vue* (la position de la caméra), *projection* (la perspective, qui rapetisse ce qui est loin). La *matrice normale* (3x3, inverse transposée du modèle) fait tourner les normales sans les fausser, pour que l'éclairage reste juste. Avant l'envoi, le maillage est recentré et mis à l'échelle (cube de côté 2) : la caméra, elle, tourne toujours autour de l'origine, donc autour du centre de l'objet. La matrice de vue est recalculée à chaque image depuis la caméra courante (`lookAt`, avec la même position envoyée au fragment shader pour le reflet). Elles sont calculées en TypeScript (`core/mat4.ts`) puis envoyées au shader sous forme d'*uniforms*, des valeurs communes à tous les sommets d'un même dessin.
 4. **Éclairage.** Les réglages de la lumière (modèle, position, couleur, reflet) sont aussi des uniforms, envoyés par `setLighting` seulement quand l'utilisateur les change, pas à chaque image. Voir la section suivante.
-5. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé (si la rotation automatique est active), on envoie la caméra courante et les uniforms du modèle, puis `drawElements` lance le dessin. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche.
+5. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé (si la rotation automatique est active), on envoie la caméra courante (aux DEUX programmes) et les uniforms du modèle, puis `drawElements` lance le dessin des surfaces. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche. Les traits viennent ensuite (voir la section suivante).
+
+## Comment les traits sont dessinés (fil de fer et aides)
+
+Le fil de fer, les normales, la boîte englobante, la grille et les axes sont tous faits de *segments* : un tableau de paires de points (`Float32Array`, 6 nombres par segment). Chaque aide est fabriquée par une fonction pure de `core/overlays.ts`, qui ne fait que calculer des positions, donc se teste avec de simples nombres.
+
+1. **Les positions.** `edgesOfMesh` donne les arêtes uniques des triangles (deux sommets qui ont la même position ne comptent qu'une fois : un cube a 24 sommets mais 8 positions, il donne 18 segments), `normalSegments` un segment par sommet (un sur k au-delà de 4 000), `boundingBoxSegments` les 12 arêtes de la boîte, `gridSegments` la grille, `axesSegments` les trois axes. Les trois premières sont calculées sur le maillage déjà *normalisé* (celui qu'on voit à l'écran), pour tomber pile sur l'objet.
+2. **Le GPU.** `gl/lineRenderer.ts` envoie chaque tableau dans un buffer rangé dans un VAO (une *série*), et la dessine avec `gl.LINES` : le GPU relie le 1er point au 2e, le 3e au 4e, etc. Une série reçoit une matrice de modèle et une couleur au moment du dessin.
+3. **Les matrices.** Les aides liées à l'objet (arêtes, normales, boîte) sont dessinées avec la même matrice de modèle que l'objet, donc elles tournent avec lui. La grille et les axes sont dans le monde : matrice identité, ils ne tournent pas. Vue et projection sont les mêmes pour les deux programmes.
+4. **Quand.** Une aide est créée au premier dessin où son option est active, puis gardée. Les arêtes, normales et boîte sont jetées quand le maillage change.
+5. **L'ordre.** D'abord les surfaces (sauf en fil de fer seul), puis les traits par-dessus. En mode « Plein et fil de fer », les surfaces sont dessinées avec un *polygon offset* : un léger décalage vers l'arrière qui évite que le trait et la surface, à la même profondeur, se disputent le même pixel (le trait serait alors mangé par endroits, c'est le *z-fighting*).
 
 ## Comment un pixel est éclairé (`mesh.frag`)
 

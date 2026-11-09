@@ -580,7 +580,7 @@ describe('Viewer3D : options de vue', () => {
 
     expect(container.querySelector('canvas')).toBe(canvas)
     expect(env.getContext.mock.calls.length).toBe(contextRequests)
-    expect(fake.mocks.createProgram).toHaveBeenCalledOnce()
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(fake.mocks.createVertexArray).toHaveBeenCalledOnce()
   })
 

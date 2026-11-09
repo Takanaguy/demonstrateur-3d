@@ -18,7 +18,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const ONE_MESH_ALIVE = { shader: 0, program: 1, buffer: 3, vertexArray: 1 }
+const ONE_MESH_ALIVE = { shader: 0, program: 2, buffer: 3, vertexArray: 1 }
 
 describe('Viewer3D : changement de maillage', () => {
   it('affiche par défaut un cube (24 sommets)', () => {
@@ -45,7 +45,7 @@ describe('Viewer3D : changement de maillage', () => {
 
     expect(container.querySelector('canvas')).toBe(canvas) // même élément
     expect(env.getContext.mock.calls.length).toBe(contextRequests) // aucun nouveau contexte demandé
-    expect(fake.mocks.createProgram).toHaveBeenCalledOnce()
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2) // deux programmes : l'objet et les lignes
     expect(fake.liveCounts()).toEqual(ONE_MESH_ALIVE) // l'ancien VAO et ses buffers ont été libérés
     const expected = normalizeToUnitBox(sphere)
     expect(lastUploadedMesh(fake).positions).toEqual(Array.from(expected.positions))
@@ -77,7 +77,7 @@ describe('Viewer3D : changement de maillage', () => {
 
     env.loseAndRestoreContext(container.querySelector('canvas')!, fake)
 
-    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(4) // deux au départ, deux à la restauration (objet et lignes)
     expect(fake.liveCounts()).toEqual(ONE_MESH_ALIVE)
     expect(lastUploadedMesh(fake).positions).toEqual(Array.from(normalizeToUnitBox(cone).positions))
   })

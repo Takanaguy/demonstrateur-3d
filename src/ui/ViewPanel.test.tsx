@@ -1,14 +1,14 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { DEFAULT_VIEW_OPTIONS, type ViewOptions } from '../core/viewOptions'
 import { ViewPanel } from './ViewPanel'
 
 /** Monte le panneau avec des options (par défaut + changements) et renvoie les fonctions espionnes. */
-function setup(changes: Partial<ViewOptions> = {}) {
+function setup(changes: Partial<ViewOptions> = {}, error?: string | null) {
   const onChange = vi.fn()
   const onResetCamera = vi.fn()
   const options: ViewOptions = { ...DEFAULT_VIEW_OPTIONS, ...changes }
-  const view = render(<ViewPanel options={options} onChange={onChange} onResetCamera={onResetCamera} />)
+  const view = render(<ViewPanel options={options} onChange={onChange} onResetCamera={onResetCamera} error={error} />)
   return { onChange, onResetCamera, options, ...view }
 }
 
@@ -78,6 +78,155 @@ describe('ViewPanel : aide du culling', () => {
     expect(checkbox).toHaveAccessibleDescription(/fichier OBJ/)
     expect(checkbox).toHaveAccessibleDescription(/mauvais sens/)
     expect(checkbox).toHaveAccessibleDescription(/invisible/)
+  })
+})
+
+describe('ViewPanel : mode d\'affichage', () => {
+  const group = () => screen.getByRole('group', { name: 'Affichage' })
+
+  it('un groupe nommé « Affichage » avec trois choix : Plein, Fil de fer, Plein et fil de fer', () => {
+    setup()
+
+    const labels = within(group())
+      .getAllByRole('radio')
+      .map((radio) => radio.getAttribute('value'))
+    expect(labels).toEqual(['solid', 'wireframe', 'solid-wireframe'])
+    expect(within(group()).getByRole('radio', { name: 'Plein' })).toBeInTheDocument()
+    expect(within(group()).getByRole('radio', { name: 'Fil de fer' })).toBeInTheDocument()
+    expect(within(group()).getByRole('radio', { name: 'Plein et fil de fer' })).toBeInTheDocument()
+  })
+
+  it('au départ : « Plein » est coché, et lui seul', () => {
+    setup()
+
+    expect(screen.getByRole('radio', { name: 'Plein' })).toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Fil de fer' })).not.toBeChecked()
+    expect(screen.getByRole('radio', { name: 'Plein et fil de fer' })).not.toBeChecked()
+  })
+
+  it.each([
+    ['wireframe', 'Fil de fer'],
+    ['solid-wireframe', 'Plein et fil de fer'],
+  ] as const)('reflète le mode reçu en prop (%s) : un seul choix coché', (displayMode, label) => {
+    setup({ displayMode })
+
+    expect(screen.getByRole('radio', { name: label })).toBeChecked()
+    expect(within(group()).getAllByRole('radio').filter((radio) => (radio as HTMLInputElement).checked)).toHaveLength(1)
+  })
+
+  it.each([
+    ['Fil de fer', 'wireframe'],
+    ['Plein et fil de fer', 'solid-wireframe'],
+  ] as const)('choisir « %s » appelle onChange avec ce seul champ modifié', async (label, displayMode) => {
+    const user = userEvent.setup()
+    const { onChange, options } = setup({ autoRotate: false })
+
+    await user.click(screen.getByRole('radio', { name: label }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...options, displayMode })
+  })
+
+  it('on change de mode aussi au clavier (flèche bas depuis « Plein »)', async () => {
+    const user = userEvent.setup()
+    const { onChange } = setup()
+    screen.getByRole('radio', { name: 'Plein' }).focus()
+
+    await user.keyboard('{ArrowDown}')
+
+    expect(onChange).toHaveBeenCalledOnce()
+    expect(onChange.mock.calls[0]![0].displayMode).toBe('wireframe')
+  })
+
+  it('explique le fil de fer (diagonales des faces, plafond, traits de 1 pixel) et relie l\'aide au groupe', () => {
+    setup()
+
+    expect(group()).toHaveAccessibleDescription(/arêtes de tous les triangles/)
+    expect(group()).toHaveAccessibleDescription(/diagonales/)
+    expect(group()).toHaveAccessibleDescription(/500\s000 triangles/)
+    expect(group()).toHaveAccessibleDescription(/1 pixel/)
+  })
+})
+
+describe('ViewPanel : aides (normales, boîte, grille, axes)', () => {
+  const NORMALS = 'Normales des sommets'
+  const BOX = 'Boîte englobante'
+  const GRID = 'Grille'
+  const AXES = 'Axes'
+
+  it('un groupe « Aides » avec quatre cases, toutes décochées au départ', () => {
+    setup()
+
+    const group = screen.getByRole('group', { name: 'Aides' })
+    expect(within(group).getAllByRole('checkbox')).toHaveLength(4)
+    for (const name of [NORMALS, BOX, GRID, AXES]) expect(screen.getByRole('checkbox', { name })).not.toBeChecked()
+  })
+
+  it('reflète les options reçues en prop', () => {
+    setup({ showNormals: true, showBoundingBox: false, showGrid: true, showAxes: true })
+
+    expect(screen.getByRole('checkbox', { name: NORMALS })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: BOX })).not.toBeChecked()
+    expect(screen.getByRole('checkbox', { name: GRID })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: AXES })).toBeChecked()
+  })
+
+  it.each([
+    [NORMALS, 'showNormals'],
+    [BOX, 'showBoundingBox'],
+    [GRID, 'showGrid'],
+    [AXES, 'showAxes'],
+  ] as const)('cocher « %s » appelle onChange avec ce seul champ (%s) modifié', async (label, field) => {
+    const user = userEvent.setup()
+    const { onChange, options } = setup({ displayMode: 'wireframe' })
+
+    await user.click(screen.getByRole('checkbox', { name: label }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...options, [field]: true })
+  })
+
+  it('décocher une aide cochée la remet à false', async () => {
+    const user = userEvent.setup()
+    const { onChange, options } = setup({ showGrid: true })
+
+    await user.click(screen.getByRole('checkbox', { name: GRID }))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...options, showGrid: false })
+  })
+
+  it('les normales : un segment par sommet, échantillonné au-delà de 4 000 sommets, lu avec la case', () => {
+    setup()
+
+    const checkbox = screen.getByRole('checkbox', { name: NORMALS })
+    expect(checkbox).toHaveAccessibleDescription(/un segment par sommet/i)
+    expect(checkbox).toHaveAccessibleDescription(/échantillonné au-delà de 4\s000 sommets/)
+  })
+
+  it('la grille et les axes disent qu\'ils sont fixes dans le monde, les axes donnent leurs couleurs', () => {
+    setup()
+
+    expect(screen.getByRole('checkbox', { name: GRID })).toHaveAccessibleDescription(/fixe dans le monde/)
+    const axes = screen.getByRole('checkbox', { name: AXES })
+    expect(axes).toHaveAccessibleDescription(/X en rouge, Y en vert, Z en bleu/)
+    expect(axes).toHaveAccessibleDescription(/Fixes dans le monde/)
+  })
+})
+
+describe('ViewPanel : erreur d\'une aide', () => {
+  it('sans erreur : aucune alerte', () => {
+    setup()
+
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('avec une erreur : une alerte (role="alert") affiche le message', () => {
+    setup({}, "Le fil de fer n'a pas pu être affiché. L'affichage plein est conservé.")
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Le fil de fer n'a pas pu être affiché.")
+  })
+
+  it('une erreur null n\'affiche rien', () => {
+    setup({}, null)
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 })
 

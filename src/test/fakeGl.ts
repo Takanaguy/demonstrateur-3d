@@ -18,6 +18,32 @@ interface FakeResource {
   data?: number[]
 }
 
+/** Un envoi d'uniform : sa valeur, et le programme qui était actif à ce moment (un uniform appartient à UN programme). */
+export interface UniformCall {
+  transpose?: boolean
+  values: number[]
+  /** La ressource « programme » active au moment de l'envoi, ou `undefined` si aucun. */
+  program: unknown
+  /**
+   * Le programme auquel appartient l'emplacement de l'uniform. Un envoi n'est juste que si `program` (actif)
+   * et `owner` sont le même : sinon la valeur part dans le mauvais programme (oubli de `useProgram`).
+   */
+  owner: unknown
+}
+
+/** Un dessin (`drawElements` ou `drawArrays`), avec l'état du contexte au moment où il est lancé. */
+export interface DrawCall {
+  call: 'drawElements' | 'drawArrays'
+  /** TRIANGLES ou LINES. */
+  mode: number
+  /** Nombre d'indices (drawElements) ou de sommets (drawArrays). */
+  count: number
+  /** Le programme actif : le dessin est fait avec celui-là. */
+  program: unknown
+  /** Vrai si POLYGON_OFFSET_FILL était activé pendant ce dessin. */
+  polygonOffsetFill: boolean
+}
+
 /** Un appel à `vertexAttribPointer`, avec le contenu du buffer qui était relié à ARRAY_BUFFER à ce moment. */
 export interface AttributeBinding {
   location: number
@@ -57,8 +83,10 @@ const CONSTANTS = {
   UNSIGNED_SHORT: 5123,
   UNSIGNED_INT: 5125,
   TRIANGLES: 4,
+  LINES: 1,
   DEPTH_TEST: 2929,
   CULL_FACE: 2884,
+  POLYGON_OFFSET_FILL: 32823,
   NO_ERROR: 0,
   INVALID_OPERATION: 1282,
   OUT_OF_MEMORY: 1285,
@@ -86,15 +114,33 @@ export function createFakeGl(options: FakeGlOptions = {}) {
   }
 
   const failedShaders = new WeakSet<object>()
-  const uniformLocations = new Map<string, { name: string }>()
-  /** Toutes les valeurs envoyées, dans l'ordre, par nom d'uniform. */
-  const uniformHistory = new Map<string, { transpose?: boolean; values: number[] }[]>()
+  /**
+   * Un emplacement par PAIRE (programme, nom), comme un vrai contexte : le même nom d'uniform a un
+   * emplacement différent dans chaque programme. Le renderer a deux programmes avec des uniforms de
+   * mêmes noms (uView, uProjection...), qu'il faut pouvoir distinguer.
+   */
+  const uniformLocations = new Map<string, { name: string; program: unknown }>()
+  /** Le programme actuellement actif (`useProgram`). */
+  let currentProgram: unknown
+  /** Toutes les valeurs envoyées, dans l'ordre, par nom d'uniform (tous programmes confondus). */
+  const uniformHistory = new Map<string, UniformCall[]>()
   const record = (location: unknown, values: Iterable<number>, transpose?: boolean) => {
     const name = (location as { name: string }).name
     const history = uniformHistory.get(name) ?? []
-    history.push({ transpose, values: Array.from(values) })
+    history.push({
+      transpose,
+      values: Array.from(values),
+      program: currentProgram,
+      owner: (location as { program: unknown }).program,
+    })
     uniformHistory.set(name, history)
   }
+
+  /** Vrai quand le contexte est « perdu » (voir `setContextLost`) : `isContextLost` le dit, comme un vrai contexte. */
+  let contextLost = false
+
+  /** Les dessins lancés, dans l'ordre, avec l'état au moment du dessin. */
+  const drawLog: DrawCall[] = []
 
   /** Le buffer actuellement relié, par cible (ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER). */
   const boundBuffers = new Map<number, FakeResource | null>()
@@ -139,7 +185,9 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     getProgramParameter: vi.fn(() => !options.failLink),
     getProgramInfoLog: vi.fn(() => PROGRAM_LOG),
     deleteProgram: vi.fn(remove),
-    useProgram: vi.fn(),
+    useProgram: vi.fn((program: unknown) => {
+      currentProgram = program
+    }),
 
     createBuffer: vi.fn(() => make('buffer')),
     bindBuffer: vi.fn((target: number, buffer: unknown) => {
@@ -162,11 +210,12 @@ export function createFakeGl(options: FakeGlOptions = {}) {
       attributeBindings.push({ location, size, data: bound?.data ?? [] })
     }),
 
-    getUniformLocation: vi.fn((_program: unknown, name: string) => {
-      let location = uniformLocations.get(name)
+    getUniformLocation: vi.fn((program: unknown, name: string) => {
+      const key = `${(program as FakeResource).id}:${name}`
+      let location = uniformLocations.get(key)
       if (!location) {
-        location = { name }
-        uniformLocations.set(name, location)
+        location = { name, program }
+        uniformLocations.set(key, location)
       }
       return location
     }),
@@ -193,8 +242,28 @@ export function createFakeGl(options: FakeGlOptions = {}) {
       cullFaceMode = mode
     }),
     frontFace: vi.fn(),
+    polygonOffset: vi.fn(),
     viewport: vi.fn(),
-    drawElements: vi.fn(),
+    drawElements: vi.fn((mode: number, count: number) => {
+      drawLog.push({
+        call: 'drawElements',
+        mode,
+        count,
+        program: currentProgram,
+        polygonOffsetFill: enabledCapabilities.has(CONSTANTS.POLYGON_OFFSET_FILL),
+      })
+    }),
+    drawArrays: vi.fn((mode: number, _first: number, count: number) => {
+      drawLog.push({
+        call: 'drawArrays',
+        mode,
+        count,
+        program: currentProgram,
+        polygonOffsetFill: enabledCapabilities.has(CONSTANTS.POLYGON_OFFSET_FILL),
+      })
+    }),
+
+    isContextLost: vi.fn(() => contextLost),
 
     // Utilisés par la détection de WebGL, qui libère son contexte de test.
     getExtension: vi.fn(() => null),
@@ -221,13 +290,24 @@ export function createFakeGl(options: FakeGlOptions = {}) {
       live.clear()
       enabledCapabilities.clear()
       cullFaceMode = CONSTANTS.BACK
+      currentProgram = undefined
     },
     /** Vrai si `enable(capability)` a été appelé (et pas défait par `disable`) depuis la création ou la dernière perte. */
     isEnabled: (capability: number) => enabledCapabilities.has(capability),
     /** La face éliminée par le culling (BACK par défaut, comme dans WebGL). */
     cullFaceMode: () => cullFaceMode,
-    /** Historique des valeurs envoyées pour un uniform. */
+    /** Historique des valeurs envoyées pour un uniform (tous programmes confondus ; chaque envoi note son programme). */
     uniformHistory: (name: string) => uniformHistory.get(name) ?? [],
+    /** Les dessins lancés, dans l'ordre, avec le programme actif et l'état du polygon offset à ce moment. */
+    draws: () => [...drawLog],
+    /** Fait répondre `isContextLost` vrai ou faux (la perte arrive pendant une création, par exemple). */
+    setContextLost(lost: boolean) {
+      contextLost = lost
+    },
+    /** Vide la liste des dessins (pour ne regarder que les dessins suivants). */
+    clearDraws() {
+      drawLog.length = 0
+    },
     /** Dernière valeur envoyée pour un uniform. */
     lastUniform: (name: string) => uniformHistory.get(name)?.at(-1)?.values,
     /** Pour chaque `vertexAttribPointer`, l'entrée du shader branchée et les données du buffer qui l'alimente. */

@@ -6,7 +6,7 @@ import { advanceRotation } from '../core/rotation'
 import { createShape } from '../core/shapes'
 import { DEFAULT_VIEW_OPTIONS, type ViewOptions } from '../core/viewOptions'
 import { isWebGLAvailable } from '../core/webgl'
-import { createMeshRenderer, type MeshRenderer } from '../gl/meshRenderer'
+import { createMeshRenderer, type MeshRenderer, type OverlayErrorHandler } from '../gl/meshRenderer'
 
 /** Tours par seconde : un tour complet en dix secondes, une rotation lente et pas distrayante. */
 const ROTATION_TURNS_PER_SECOND = 0.1
@@ -60,7 +60,7 @@ interface Viewer3DProps {
   mesh?: Mesh
   /** Réglages de l'éclairage. Quand ils changent, ils sont envoyés au GPU sans recréer le contexte WebGL. */
   lighting?: LightingSettings
-  /** Options de vue (rotation automatique, culling). Quand elles changent, elles sont appliquées sans recréer le contexte WebGL. */
+  /** Options de vue (rotation, culling, fil de fer, aides). Quand elles changent, elles sont appliquées sans recréer le contexte WebGL. */
   viewOptions?: ViewOptions
   /**
    * Quand cette valeur change, la caméra revient à sa position de départ. La valeur elle-même n'a pas
@@ -74,6 +74,13 @@ interface Viewer3DProps {
    * l'appelant de revenir à l'ancien choix pour que l'interface reste cohérente avec l'écran.
    */
   onMeshError?: (error: unknown) => void
+  /**
+   * Appelé si une aide en traits n'a pas pu être créée (fil de fer sur un maillage trop gros ou mémoire
+   * GPU saturée, par exemple). Le composant a déjà basculé : `reset` est la partie des options remise à
+   * sa valeur sûre (`{ displayMode: 'solid' }`). À l'appelant de mettre ses options et son interface
+   * en accord avec l'écran (`viewOptions` est une prop) et de prévenir l'utilisateur.
+   */
+  onOverlayError?: OverlayErrorHandler
 }
 
 /**
@@ -86,9 +93,10 @@ function tryCreateRenderer(
   lighting: LightingSettings,
   camera: OrbitCamera,
   viewOptions: ViewOptions,
+  onOverlayError: OverlayErrorHandler,
 ): MeshRenderer | null {
   try {
-    return createMeshRenderer(gl, mesh, lighting, camera, viewOptions)
+    return createMeshRenderer(gl, mesh, lighting, camera, viewOptions, onOverlayError)
   } catch (error) {
     console.error('Démonstrateur 3D : création du rendu impossible.', error)
     return null
@@ -124,6 +132,7 @@ export function Viewer3D({
   resetViewKey = 0,
   label = 'Un objet en 3D',
   onMeshError,
+  onOverlayError,
 }: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   // Le maillage actuellement affiché. Le renderer est recréé après une perte de contexte : c'est
@@ -140,6 +149,9 @@ export function Viewer3D({
   const viewOptionsRef = useRef(viewOptions)
   // La dernière valeur de `resetViewKey` vue, pour détecter un changement.
   const resetViewKeyRef = useRef(resetViewKey)
+  // Le dernier rappel d'erreur des aides. Une référence et pas une dépendance de l'effet principal :
+  // un nouveau rappel à chaque rendu de l'appelant recréerait le contexte WebGL.
+  const onOverlayErrorRef = useRef(onOverlayError)
   // Identifiant du texte d'aide des commandes, relié au canvas par `aria-describedby`.
   const helpId = useId()
   // Le renderer vivant, partagé entre l'effet principal (qui le crée) et l'effet du maillage.
@@ -155,8 +167,18 @@ export function Viewer3D({
 
     // `antialias` : lissage des bords (dentelures) fait par le GPU, si le navigateur le permet.
     const gl = canvas.getContext('webgl2', { antialias: true })
+
+    // Une aide n'a pas pu être créée (appelé depuis le dessin) : le renderer est déjà revenu à un
+    // affichage sans elle. On retient ce repli dans les options COURANTES, pour qu'un renderer recréé
+    // après une perte de contexte ne la redemande pas, puis on prévient l'appelant.
+    const handleOverlayError: OverlayErrorHandler = (error, reset) => {
+      console.error("Démonstrateur 3D : une aide d'affichage n'a pas pu être créée.", error)
+      viewOptionsRef.current = { ...viewOptionsRef.current, ...reset }
+      onOverlayErrorRef.current?.(error, reset)
+    }
+
     let renderer = gl
-      ? tryCreateRenderer(gl, meshRef.current, lightingRef.current, cameraRef.current, viewOptionsRef.current)
+      ? tryCreateRenderer(gl, meshRef.current, lightingRef.current, cameraRef.current, viewOptionsRef.current, handleOverlayError)
       : null
     if (!gl || !renderer) {
       // On ne sait si le contexte et les shaders sont acceptés qu'en les essayant : le rendu de
@@ -225,7 +247,14 @@ export function Viewer3D({
     }
     const onContextRestored = () => {
       // Le contexte est de retour mais vide : on recrée programme, buffers et VAO, puis on repart.
-      renderer = tryCreateRenderer(gl, meshRef.current, lightingRef.current, cameraRef.current, viewOptionsRef.current)
+      renderer = tryCreateRenderer(
+        gl,
+        meshRef.current,
+        lightingRef.current,
+        cameraRef.current,
+        viewOptionsRef.current,
+        handleOverlayError,
+      )
       rendererRef.current = renderer
       if (!renderer) {
         setRenderFailed(true)
@@ -280,6 +309,11 @@ export function Viewer3D({
     lightingRef.current = lighting
     rendererRef.current?.setLighting(lighting)
   }, [lighting])
+
+  // Dernier rappel d'erreur des aides : relu au moment de l'erreur, pas capturé à la création du renderer.
+  useEffect(() => {
+    onOverlayErrorRef.current = onOverlayError
+  }, [onOverlayError])
 
   // Options de vue : même logique que l'éclairage. On retient TOUJOURS les dernières (même sans
   // renderer, contexte perdu en ce moment) : la restauration les réappliquera.

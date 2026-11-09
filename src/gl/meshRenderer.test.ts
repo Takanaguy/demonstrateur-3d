@@ -16,7 +16,7 @@ describe('createMeshRenderer : création', () => {
 
     createMeshRenderer(gl, cube)
 
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
   })
 
   it('active le test de profondeur, désactive le face culling, avec le fond #F7F4EE', () => {
@@ -279,7 +279,7 @@ describe('createMeshRenderer : éclairage', () => {
     expect(mocks.uniformMatrix4fv).not.toHaveBeenCalled()
     expect(mocks.uniformMatrix3fv).not.toHaveBeenCalled()
     expect(mocks.uniform3fv.mock.calls.filter(([location]) => (location as { name: string }).name === 'uColor')).toHaveLength(colorCalls)
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
   })
 
   it('ne dépend plus de la direction fixe d\'avant : il n\'y a plus d\'uniform uLightDirection', () => {
@@ -330,19 +330,27 @@ describe('createMeshRenderer : caméra', () => {
     expect(lastUniform('uCameraPosition')).toEqual(Array.from(cameraPosition(FAR_CAMERA)))
   })
 
-  it("active le programme AVANT d'envoyer les uniforms de la caméra (sinon ils iraient au mauvais programme)", () => {
-    const { gl, mocks } = createFakeGl()
+  it("active chaque programme AVANT d'envoyer la vue de la caméra (sinon elle irait au mauvais programme)", () => {
+    const { gl, mocks, uniformHistory } = createFakeGl()
     const renderer = createMeshRenderer(gl, cube)
+    const [meshProgram, lineProgram] = mocks.createProgram.mock.results.map((result) => result.value)
     mocks.useProgram.mockClear()
     mocks.uniformMatrix4fv.mockClear()
     mocks.uniform3fv.mockClear()
+    const viewCalls = uniformHistory('uView').length
 
     renderer.setCamera(FAR_CAMERA)
 
-    expect(mocks.useProgram).toHaveBeenCalledOnce()
-    const useProgramOrder = mocks.useProgram.mock.invocationCallOrder[0]!
-    expect(useProgramOrder).toBeLessThan(mocks.uniformMatrix4fv.mock.invocationCallOrder[0]!)
-    expect(useProgramOrder).toBeLessThan(mocks.uniform3fv.mock.invocationCallOrder[0]!)
+    // Deux programmes, deux `useProgram` : celui de l'objet (vue + position de l'oeil), puis celui des lignes (vue).
+    expect(mocks.useProgram.mock.calls).toEqual([[meshProgram], [lineProgram]])
+    const [objectUse, lineUse] = mocks.useProgram.mock.invocationCallOrder
+    expect(objectUse).toBeLessThan(mocks.uniformMatrix4fv.mock.invocationCallOrder[0]!)
+    expect(objectUse).toBeLessThan(mocks.uniform3fv.mock.invocationCallOrder[0]!)
+    expect(lineUse).toBeLessThan(mocks.uniformMatrix4fv.mock.invocationCallOrder[1]!)
+    // Et chaque matrice est bien arrivée dans le programme à qui appartient l'uniform.
+    const sent = uniformHistory('uView').slice(viewCalls)
+    expect(sent.map((call) => call.program)).toEqual([meshProgram, lineProgram])
+    expect(sent.every((call) => call.program === call.owner)).toBe(true)
   })
 
   it('ne transpose pas la matrice de vue', () => {
@@ -408,10 +416,12 @@ describe('createMeshRenderer : caméra', () => {
     expect(mocks.uniform1i).not.toHaveBeenCalled()
     expect(mocks.uniform1f).not.toHaveBeenCalled()
     expect(mocks.uniformMatrix3fv).not.toHaveBeenCalled()
-    // Une seule matrice 4x4 envoyée : la vue (ni modèle ni projection).
-    expect(mocks.uniformMatrix4fv).toHaveBeenCalledOnce()
-    expect((mocks.uniformMatrix4fv.mock.calls[0]![0] as unknown as { name: string }).name).toBe('uView')
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    // Deux matrices 4x4 envoyées, toutes deux la vue (une par programme : objet et lignes), ni modèle ni projection.
+    expect(mocks.uniformMatrix4fv).toHaveBeenCalledTimes(2)
+    for (const [location] of mocks.uniformMatrix4fv.mock.calls) {
+      expect((location as unknown as { name: string }).name).toBe('uView')
+    }
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
   })
 
   it('dessiner ne renvoie pas la caméra : elle garde la dernière donnée par setCamera', () => {
@@ -462,7 +472,7 @@ describe('createMeshRenderer : options de vue', () => {
   it('applique les options données à la création (culling actif dès le départ)', () => {
     const { gl, isEnabled, cullFaceMode } = createFakeGl()
 
-    createMeshRenderer(gl, cube, DEFAULT_LIGHTING, DEFAULT_CAMERA, { autoRotate: true, backfaceCulling: true })
+    createMeshRenderer(gl, cube, DEFAULT_LIGHTING, DEFAULT_CAMERA, { ...DEFAULT_VIEW_OPTIONS, backfaceCulling: true })
 
     expect(isEnabled(gl.CULL_FACE)).toBe(true)
     expect(cullFaceMode()).toBe(gl.BACK)
@@ -483,7 +493,7 @@ describe('createMeshRenderer : options de vue', () => {
     expect(mocks.uniformMatrix4fv).not.toHaveBeenCalled()
     expect(mocks.uniform1i).not.toHaveBeenCalled()
     expect(mocks.uniform3fv).not.toHaveBeenCalled()
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
   })
 
   it("autoRotate n'est pas l'affaire du renderer : le changer ne touche pas au GPU", () => {
@@ -491,7 +501,7 @@ describe('createMeshRenderer : options de vue', () => {
     const renderer = createMeshRenderer(gl, cube)
     mocks.enable.mockClear()
 
-    renderer.setViewOptions({ autoRotate: false, backfaceCulling: false })
+    renderer.setViewOptions({ ...DEFAULT_VIEW_OPTIONS, autoRotate: false })
 
     // Seul backfaceCulling compte : le culling reste désactivé et rien n'est activé.
     expect(mocks.enable).not.toHaveBeenCalled()
@@ -601,7 +611,7 @@ describe('createMeshRenderer : libération', () => {
 
     renderer.dispose()
 
-    expect(mocks.deleteProgram).toHaveBeenCalledOnce()
+    expect(mocks.deleteProgram).toHaveBeenCalledTimes(2) // l'objet et les lignes
     expect(mocks.deleteBuffer).toHaveBeenCalledTimes(3)
     expect(mocks.deleteVertexArray).toHaveBeenCalledOnce()
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
@@ -671,11 +681,11 @@ describe('createMeshRenderer : setMesh', () => {
 
     expect(mocks.deleteVertexArray).toHaveBeenCalledExactlyOnceWith(oldVao)
     expect(mocks.deleteBuffer.mock.calls.map(([buffer]) => buffer)).toEqual(oldBuffers)
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
 
     renderer.setMesh(createPlane())
     renderer.setMesh(cube)
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
 
     renderer.dispose()
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
@@ -715,7 +725,7 @@ describe('createMeshRenderer : setMesh', () => {
     expect(() => renderer.setMesh(createSphere(8, 4))).toThrow(/buffer/)
 
     // L'ancien jeu est intact (rien de supprimé) et le nouveau, à moitié créé, a été nettoyé.
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
     expect(mocks.deleteVertexArray).toHaveBeenCalledTimes(1) // seulement le VAO du nouveau, pas l'ancien
     expect(mocks.deleteVertexArray).not.toHaveBeenCalledWith(oldVao)
     mocks.bindVertexArray.mockClear()
@@ -732,7 +742,7 @@ describe('createMeshRenderer : setMesh', () => {
 
     expect(() => renderer.setMesh(createSphere(8, 4))).toThrow(/Mémoire graphique insuffisante/)
 
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
     expect(mocks.deleteVertexArray).toHaveBeenCalledTimes(1)
     expect(mocks.deleteVertexArray).not.toHaveBeenCalledWith(oldVao)
     mocks.bindVertexArray.mockClear()
@@ -748,7 +758,7 @@ describe('createMeshRenderer : setMesh', () => {
 
     expect(() => renderer.setMesh(empty)).toThrow(RangeError)
 
-    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(liveCounts()).toEqual({ shader: 0, program: 2, buffer: 3, vertexArray: 1 })
     renderer.draw(0)
     expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
   })

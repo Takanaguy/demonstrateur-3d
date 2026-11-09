@@ -88,7 +88,7 @@ function mountViewer(props: { className?: string } = {}) {
 }
 
 const NOTHING_ALIVE = { shader: 0, program: 0, buffer: 0, vertexArray: 0 }
-const ONE_CUBE_ALIVE = { shader: 0, program: 1, buffer: 3, vertexArray: 1 }
+const ONE_CUBE_ALIVE = { shader: 0, program: 2, buffer: 3, vertexArray: 1 }
 
 beforeEach(() => {
   fakes = new WeakMap()
@@ -162,7 +162,7 @@ describe('Viewer3D : nettoyage au démontage', () => {
     unmount()
 
     expect(fake.liveCounts()).toEqual(NOTHING_ALIVE)
-    expect(fake.mocks.deleteProgram).toHaveBeenCalledOnce()
+    expect(fake.mocks.deleteProgram).toHaveBeenCalledTimes(2) // le programme de l'objet et celui des lignes
     expect(fake.mocks.deleteBuffer).toHaveBeenCalledTimes(3)
     expect(fake.mocks.deleteVertexArray).toHaveBeenCalledOnce()
     expect(cancelAnimationFrameMock).toHaveBeenCalledWith(pendingFrameId)
@@ -202,8 +202,8 @@ describe('Viewer3D : nettoyage au démontage', () => {
     const fake = fakes.get(canvas)!
 
     // React a monté, démonté puis remonté : deux jeux de ressources créés, un seul encore vivant.
-    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
-    expect(fake.mocks.deleteProgram).toHaveBeenCalledTimes(1)
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(4) // deux montages, deux programmes chacun (objet et lignes)
+    expect(fake.mocks.deleteProgram).toHaveBeenCalledTimes(2) // les deux programmes du premier montage
     expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     // Une seule boucle vivante (celle du second montage) et un seul canvas dans la page.
     expect(frameCallbacks.size).toBe(1)
@@ -279,7 +279,7 @@ describe('Viewer3D : perte et restauration du contexte', () => {
 
     dispatchContextEvent(canvas, 'webglcontextrestored')
 
-    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(2)
+    expect(fake.mocks.createProgram).toHaveBeenCalledTimes(4) // les deux programmes du départ, puis les deux de la restauration
     expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     expect(frameCallbacks.size).toBe(1)
     runFrame(100)
