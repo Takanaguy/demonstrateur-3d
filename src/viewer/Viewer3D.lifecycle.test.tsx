@@ -134,9 +134,9 @@ describe('Viewer3D : création', () => {
     expect(getContextSpy).toHaveBeenCalledWith('webgl2', { antialias: true })
     expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     expect(fake.mocks.enable).toHaveBeenCalledWith(fake.gl.DEPTH_TEST)
-    expect(fake.mocks.enable).toHaveBeenCalledWith(fake.gl.CULL_FACE)
+    expect(fake.mocks.enable).not.toHaveBeenCalledWith(fake.gl.CULL_FACE)
     expect(canvas).toHaveAttribute('role', 'img')
-    expect(canvas).toHaveAccessibleName(/cube/i)
+    expect(canvas).toHaveAccessibleName(/objet en 3D/i)
   })
 
   it('dessine le cube à chaque image tant que le composant est monté', () => {

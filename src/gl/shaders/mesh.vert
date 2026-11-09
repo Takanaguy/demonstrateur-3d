@@ -1,15 +1,15 @@
 #version 300 es
-// Shader de sommets : il s'exécute UNE FOIS PAR SOMMET (24 fois pour le cube) sur le GPU.
+// Shader de sommets : il s'exécute UNE FOIS PAR SOMMET du maillage (24 pour un cube) sur le GPU.
 // Son travail : dire où le sommet atterrit à l'écran, et passer sa normale au fragment shader.
 // (La ligne #version doit être la toute première du fichier, sinon la compilation échoue.)
 
 // Entrées lues dans les buffers. Les numéros (location) sont fixés ici et repris côté TypeScript
 // quand on branche les buffers : pas besoin de les redemander au programme.
 layout(location = 0) in vec3 aPosition; // position du sommet dans le repère de l'objet
-layout(location = 1) in vec3 aNormal;   // normale de la face, dans le repère de l'objet
+layout(location = 1) in vec3 aNormal;   // normale du sommet, dans le repère de l'objet
 
 // Uniforms : valeurs identiques pour tous les sommets d'un même dessin, envoyées par le CPU.
-uniform mat4 uModel;        // objet -> monde (rotation du cube)
+uniform mat4 uModel;        // objet -> monde (rotation de l'objet)
 uniform mat4 uView;         // monde -> caméra
 uniform mat4 uProjection;   // caméra -> écran (perspective)
 uniform mat3 uNormalMatrix; // inverse transposée de uModel (3x3), pour les normales

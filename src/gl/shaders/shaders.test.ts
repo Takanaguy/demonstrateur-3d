@@ -1,13 +1,13 @@
-import fragmentSource from './cube.frag?raw'
-import vertexSource from './cube.vert?raw'
+import fragmentSource from './mesh.frag?raw'
+import vertexSource from './mesh.vert?raw'
 
 // Le compilateur WebGL n'existe pas dans jsdom : ces tests vérifient les règles que le compilateur
 // imposerait et le contrat avec le code TypeScript (noms des entrées et des uniforms).
 
-describe('shaders du cube (texte GLSL)', () => {
+describe('shaders du maillage (texte GLSL)', () => {
   it.each([
-    ['cube.vert', vertexSource],
-    ['cube.frag', fragmentSource],
+    ['mesh.vert', vertexSource],
+    ['mesh.frag', fragmentSource],
   ])('%s commence par #version 300 es, tout en première ligne (sinon la compilation échoue)', (_name, source) => {
     // `^` sans drapeau `m` : rien avant `#version` (ni BOM, ni ligne vide). `\r?\n` accepte les deux
     // fins de ligne, car Git peut convertir les fichiers en CRLF sur Windows.
@@ -32,6 +32,10 @@ describe('shaders du cube (texte GLSL)', () => {
     ['uLightDirection', 'vec3', fragmentSource],
   ])('déclare « uniform %s » (%s) dans le bon shader', (name, type, source) => {
     expect(source).toContain(`uniform ${type} ${name};`)
+  })
+
+  it('le fragment shader retourne la normale des faces vues par l\'arrière (le culling est désactivé)', () => {
+    expect(fragmentSource).toMatch(/if \(!gl_FrontFacing\) normal = -normal;/)
   })
 
   it('la sortie du vertex shader correspond à l\'entrée du fragment shader (même nom, même type)', () => {

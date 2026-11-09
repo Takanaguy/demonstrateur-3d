@@ -2,7 +2,7 @@
  * Buffers et VAO, sans React.
  *
  * - Un BUFFER est un bloc de mémoire sur le GPU (ici : les positions, les normales ou les
- *   indices du cube). On y copie les données une fois ; le GPU les relit ensuite à chaque image.
+ *   indices du maillage). On y copie les données une fois ; le GPU les relit ensuite à chaque image.
  * - Un VAO (Vertex Array Object) mémorise « quel buffer alimente quelle entrée du shader, avec
  *   quel format ». On le configure une fois, puis on le rebranche en une seule instruction avant
  *   chaque dessin, au lieu de refaire tout le câblage à chaque image.
@@ -19,8 +19,11 @@ export interface VertexAttribute {
 
 export interface IndexedMeshData {
   attributes: readonly VertexAttribute[]
-  /** Indices des sommets, trois par triangle. */
-  indices: Uint16Array
+  /**
+   * Indices des sommets, trois par triangle. 16 bits suffisent jusqu'à 65 535 sommets ; au-delà
+   * il faut du 32 bits (voir `createIndexArray` dans core/mesh.ts).
+   */
+  indices: Uint16Array | Uint32Array
 }
 
 export interface IndexedMesh {
@@ -90,12 +93,17 @@ export function createIndexedMesh(gl: WebGL2RenderingContext, mesh: IndexedMeshD
     throw error
   }
 
+  // drawElements doit savoir comment relire le buffer d'indices : si le type ne correspond pas au
+  // tableau envoyé, le GPU lirait des indices faux. WebGL2 accepte les indices 32 bits sans
+  // extension, contrairement à WebGL1.
+  const indexType = mesh.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT
+
   return {
     vao,
     indexCount: mesh.indices.length,
     draw: () => {
       gl.bindVertexArray(vao)
-      gl.drawElements(gl.TRIANGLES, mesh.indices.length, gl.UNSIGNED_SHORT, 0)
+      gl.drawElements(gl.TRIANGLES, mesh.indices.length, indexType, 0)
       gl.bindVertexArray(null)
     },
     dispose,

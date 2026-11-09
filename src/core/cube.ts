@@ -17,16 +17,8 @@
  * dessinés. Il faut donc que chaque face soit ordonnée en CCW vue de l'EXTÉRIEUR du cube.
  */
 
+import type { Mesh } from './mesh'
 import { cross, type Vec3 } from './vec3'
-
-export interface CubeGeometry {
-  /** 24 sommets x 3 coordonnées. */
-  positions: Float32Array
-  /** 24 sommets x 3 coordonnées : la normale de la face, répétée pour ses 4 sommets. */
-  normals: Float32Array
-  /** 12 triangles x 3 indices, dans [0, 24). */
-  indices: Uint16Array
-}
 
 /**
  * Pour chaque face : sa normale (vers l'extérieur) et un premier axe `u` dans le plan de la face.
@@ -51,8 +43,11 @@ const CORNERS: readonly (readonly [number, number])[] = [
   [-1, 1],
 ]
 
-/** Cube centré sur l'origine, de côté `size`. */
-export function createCubeGeometry(size = 1): CubeGeometry {
+/**
+ * Cube centré sur l'origine, de côté `size` : 24 sommets (positions et normales) et 36 indices
+ * (12 triangles, indices dans [0, 24)). La normale d'un sommet est celle de sa face.
+ */
+export function createCubeGeometry(size = 1): Mesh {
   if (!Number.isFinite(size) || size <= 0) {
     throw new RangeError(`Taille de cube invalide : ${size} (attendu : un nombre strictement positif).`)
   }

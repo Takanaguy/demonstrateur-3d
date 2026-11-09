@@ -126,3 +126,33 @@ describe('createIndexedMesh', () => {
     expect(mocks.createVertexArray).not.toHaveBeenCalled()
   })
 })
+
+describe('createIndexedMesh : indices 32 bits', () => {
+  const triangle32: IndexedMeshData = { ...triangle, indices: new Uint32Array([0, 1, 2]) }
+
+  it('draw utilise UNSIGNED_INT pour un Uint32Array', () => {
+    const { gl, mocks } = createFakeGl()
+    const mesh = createIndexedMesh(gl, triangle32)
+
+    mesh.draw()
+
+    expect(mocks.drawElements).toHaveBeenCalledExactlyOnceWith(gl.TRIANGLES, 3, gl.UNSIGNED_INT, 0)
+  })
+
+  it('envoie le tableau 32 bits tel quel au buffer d\'indices (aucune troncature)', () => {
+    const { gl, mocks } = createFakeGl()
+    const big = new Uint32Array([0, 1, 2])
+
+    createIndexedMesh(gl, { ...triangle32, indices: big })
+
+    expect(mocks.bufferData).toHaveBeenCalledWith(gl.ELEMENT_ARRAY_BUFFER, big, gl.STATIC_DRAW)
+  })
+
+  it('contrôle aussi les indices 32 bits hors limites', () => {
+    const { gl } = createFakeGl()
+
+    expect(() => createIndexedMesh(gl, { ...triangle32, indices: new Uint32Array([0, 1, 70_000]) })).toThrow(
+      /hors limites/,
+    )
+  })
+})

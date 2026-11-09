@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import type { Mesh } from '../core/mesh'
 import { advanceRotation } from '../core/rotation'
+import { createShape } from '../core/shapes'
 import { isWebGLAvailable } from '../core/webgl'
-import { createCubeRenderer, type CubeRenderer } from '../gl/cubeRenderer'
+import { createMeshRenderer, type MeshRenderer } from '../gl/meshRenderer'
 
 /** Tours par seconde : un tour complet en dix secondes, une rotation lente et pas distrayante. */
 const ROTATION_TURNS_PER_SECOND = 0.1
@@ -13,6 +15,13 @@ const ROTATION_TURNS_PER_SECOND = 0.1
  */
 const DEFAULT_SIZE_CLASSES = 'h-full w-full'
 
+/**
+ * Maillage affiché quand l'appelant n'en donne pas. Créé UNE fois, hors du composant : une valeur
+ * par défaut recréée à chaque rendu serait un « nouveau » maillage à chaque fois et relancerait
+ * l'envoi au GPU.
+ */
+const DEFAULT_MESH = createShape('cube')
+
 interface Viewer3DProps {
   /**
    * Classes Tailwind qui dimensionnent le composant. Elles REMPLACENT la taille par défaut
@@ -20,15 +29,24 @@ interface Viewer3DProps {
    * disputent jamais : l'appelant qui en passe doit donc fixer lui-même une taille.
    */
   className?: string
+  /** Maillage à afficher. Quand il change, il remplace l'ancien sans recréer le canvas ni le contexte WebGL. */
+  mesh?: Mesh
+  /** Description de ce qui est affiché, lue par les lecteurs d'écran (le canvas n'a pas de texte). */
+  label?: string
+  /**
+   * Appelé si le nouveau maillage n'a pas pu être envoyé au GPU. L'ancien reste alors affiché : à
+   * l'appelant de revenir à l'ancien choix pour que l'interface reste cohérente avec l'écran.
+   */
+  onMeshError?: (error: unknown) => void
 }
 
 /**
  * Crée le renderer, ou renvoie `null` (en journalisant la cause) si le GPU ou les shaders le
  * refusent. Le message du compilateur arrive ainsi dans la console, utile pour comprendre.
  */
-function tryCreateRenderer(gl: WebGL2RenderingContext): CubeRenderer | null {
+function tryCreateRenderer(gl: WebGL2RenderingContext, mesh: Mesh): MeshRenderer | null {
   try {
-    return createCubeRenderer(gl)
+    return createMeshRenderer(gl, mesh)
   } catch (error) {
     console.error('Démonstrateur 3D : création du rendu impossible.', error)
     return null
@@ -36,7 +54,7 @@ function tryCreateRenderer(gl: WebGL2RenderingContext): CubeRenderer | null {
 }
 
 /**
- * Possède un `<canvas>` et y dessine le cube en WebGL2.
+ * Possède un `<canvas>` et y dessine un maillage éclairé en WebGL2.
  *
  * Contrat de taille : le parent doit avoir une taille, le canvas la remplit (`block h-full w-full`
  * par défaut). La mise en page décide de la taille affichée ; le composant adapte ensuite la
@@ -46,9 +64,22 @@ function tryCreateRenderer(gl: WebGL2RenderingContext): CubeRenderer | null {
  * fonction de nettoyage. C'est indispensable en StrictMode, où React monte, démonte puis remonte
  * le composant en développement : sans nettoyage, on cumulerait des ressources GPU et des boucles
  * d'animation.
+ *
+ * Le contexte WebGL et le renderer sont créés une seule fois ; changer la prop `mesh` ne fait
+ * qu'appeler `setMesh` (voir le second effet).
  */
-export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
+export function Viewer3D({
+  className = DEFAULT_SIZE_CLASSES,
+  mesh = DEFAULT_MESH,
+  label = 'Un objet en 3D qui tourne lentement',
+  onMeshError,
+}: Viewer3DProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Le maillage actuellement affiché. Le renderer est recréé après une perte de contexte : c'est
+  // cette référence qui lui dit quoi redessiner (le DERNIER maillage choisi, pas le premier).
+  const meshRef = useRef(mesh)
+  // Le renderer vivant, partagé entre l'effet principal (qui le crée) et l'effet du maillage.
+  const rendererRef = useRef<MeshRenderer | null>(null)
   // Initialiseur paresseux : la détection ne tourne qu'au premier rendu, pas à chacun.
   const [webglAvailable] = useState(() => isWebGLAvailable())
   // WebGL peut être annoncé disponible et échouer quand même (contexte refusé, shaders refusés).
@@ -60,13 +91,15 @@ export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
 
     // `antialias` : lissage des bords (dentelures) fait par le GPU, si le navigateur le permet.
     const gl = canvas.getContext('webgl2', { antialias: true })
-    let renderer = gl ? tryCreateRenderer(gl) : null
+    let renderer = gl ? tryCreateRenderer(gl, meshRef.current) : null
     if (!gl || !renderer) {
       // On ne sait si le contexte et les shaders sont acceptés qu'en les essayant : le rendu de
       // repli est donc déclenché ici, une seule fois, dans ce cas d'échec rare.
       setRenderFailed(true)
       return
     }
+
+    rendererRef.current = renderer
 
     // On lit `matches` à chaque image plutôt qu'une fois au montage : la requête reste à jour
     // si l'utilisateur change le réglage système pendant que la page est ouverte.
@@ -119,10 +152,12 @@ export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
       stopLoop()
       // Les ressources sont déjà détruites côté GPU : inutile (et sans effet) de les supprimer.
       renderer = null
+      rendererRef.current = null
     }
     const onContextRestored = () => {
       // Le contexte est de retour mais vide : on recrée programme, buffers et VAO, puis on repart.
-      renderer = tryCreateRenderer(gl)
+      renderer = tryCreateRenderer(gl, meshRef.current)
+      rendererRef.current = renderer
       if (!renderer) {
         setRenderFailed(true)
         return
@@ -143,8 +178,29 @@ export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
       // peut pas être récupéré.
       renderer?.dispose()
       renderer = null
+      rendererRef.current = null
     }
   }, [webglAvailable])
+
+  // Changement de maillage : on garde le contexte, le canvas et la boucle, on remplace seulement
+  // les données GPU. Ne rien faire quand le maillage est déjà celui affiché évite de le renvoyer
+  // au GPU au premier rendu (le renderer vient de le recevoir) et au second montage de StrictMode.
+  useEffect(() => {
+    if (meshRef.current === mesh) return
+    const renderer = rendererRef.current
+    if (renderer) {
+      try {
+        renderer.setMesh(mesh)
+      } catch (error) {
+        // L'ancien maillage est resté affiché (voir setMesh) : meshRef n'est donc pas modifié.
+        console.error('Démonstrateur 3D : envoi du maillage au GPU impossible.', error)
+        onMeshError?.(error)
+        return
+      }
+    }
+    // Pas de renderer (contexte perdu en ce moment) : on retient quand même le choix, la restauration l'utilisera.
+    meshRef.current = mesh
+  }, [mesh, onMeshError])
 
   if (!webglAvailable || renderFailed) {
     return (
@@ -159,7 +215,7 @@ export function Viewer3D({ className = DEFAULT_SIZE_CLASSES }: Viewer3DProps) {
     <canvas
       ref={canvasRef}
       role="img"
-      aria-label="Un cube en 3D qui tourne lentement"
+      aria-label={label}
       className={`block ${className}`}
     />
   )

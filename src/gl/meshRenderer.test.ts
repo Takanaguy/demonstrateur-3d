@@ -1,26 +1,30 @@
 import { createCubeGeometry } from '../core/cube'
+import { boundingBox, normalizeToUnitBox, type Mesh } from '../core/mesh'
+import { createPlane, createSphere } from '../core/shapes'
 import { length } from '../core/vec3'
 import { createFakeGl } from '../test/fakeGl'
-import { createCubeRenderer } from './cubeRenderer'
+import { createMeshRenderer } from './meshRenderer'
 
-describe('createCubeRenderer : création', () => {
+const cube = createCubeGeometry(2)
+
+describe('createMeshRenderer : création', () => {
   it('crée un programme, trois buffers et un VAO (les shaders sont déjà libérés)', () => {
     const { gl, liveCounts } = createFakeGl()
 
-    createCubeRenderer(gl)
+    createMeshRenderer(gl, cube)
 
     expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
   })
 
-  it('active le test de profondeur et le face culling, avec le fond #F7F4EE', () => {
+  it('active le test de profondeur, désactive le face culling, avec le fond #F7F4EE', () => {
     const { gl, mocks } = createFakeGl()
 
-    createCubeRenderer(gl)
+    createMeshRenderer(gl, cube)
 
     expect(mocks.enable).toHaveBeenCalledWith(gl.DEPTH_TEST)
-    expect(mocks.enable).toHaveBeenCalledWith(gl.CULL_FACE)
-    expect(mocks.cullFace).toHaveBeenCalledWith(gl.BACK)
-    expect(mocks.frontFace).toHaveBeenCalledWith(gl.CCW)
+    // Les plans et les OBJ ouverts doivent être visibles des deux côtés : jamais de culling.
+    expect(mocks.enable).not.toHaveBeenCalledWith(gl.CULL_FACE)
+    expect(mocks.disable).toHaveBeenCalledWith(gl.CULL_FACE)
     const [r, g, b, a] = mocks.clearColor.mock.calls[0]!
     expect(r).toBeCloseTo(0xf7 / 255)
     expect(g).toBeCloseTo(0xf4 / 255)
@@ -31,7 +35,7 @@ describe('createCubeRenderer : création', () => {
   it('envoie la couleur du cube (#2E5D7C) et une direction de lumière de longueur 1', () => {
     const { gl, lastUniform } = createFakeGl()
 
-    createCubeRenderer(gl)
+    createMeshRenderer(gl, cube)
 
     const color = lastUniform('uColor')!
     expect(color[0]).toBeCloseTo(0x2e / 255)
@@ -46,7 +50,7 @@ describe('createCubeRenderer : création', () => {
   it('envoie la matrice de vue de la caméra placée en (0, 0, 5) : translation de -5 en Z', () => {
     const { gl, lastUniform } = createFakeGl()
 
-    createCubeRenderer(gl)
+    createMeshRenderer(gl, cube)
 
     const view = lastUniform('uView')!
     expect(view[14]).toBeCloseTo(-5)
@@ -56,7 +60,7 @@ describe('createCubeRenderer : création', () => {
   it("branche les positions sur l'entrée 0 et les normales sur l'entrée 1, comme le vertex shader les lit", () => {
     const { gl, mocks, attributeBindings } = createFakeGl()
 
-    createCubeRenderer(gl)
+    createMeshRenderer(gl, cube)
 
     // Les deux entrées sont activées dans l'ordre 0 puis 1, chacune lue par paquets de 3 flottants.
     expect(mocks.enableVertexAttribArray.mock.calls).toEqual([[0], [1]])
@@ -65,7 +69,7 @@ describe('createCubeRenderer : création', () => {
       [1, 3, gl.FLOAT, false, 0, 0],
     ])
     // Et ce qui alimente chaque entrée est le bon buffer : positions sur 0, normales sur 1.
-    const geometry = createCubeGeometry(1.5)
+    const geometry = normalizeToUnitBox(cube)
     const [positions, normals] = attributeBindings()
     expect(positions).toEqual({ location: 0, size: 3, data: Array.from(geometry.positions) })
     expect(normals).toEqual({ location: 1, size: 3, data: Array.from(geometry.normals) })
@@ -75,7 +79,7 @@ describe('createCubeRenderer : création', () => {
 
   it('ne transpose jamais les matrices (elles sont déjà en colonnes-majeures)', () => {
     const { gl, uniformHistory } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
     renderer.setViewport(100, 100)
     renderer.draw(0.3)
 
@@ -89,7 +93,7 @@ describe('createCubeRenderer : création', () => {
   it('libère tout et lève l\'erreur du compilateur quand les shaders sont refusés', () => {
     const { gl, liveCounts } = createFakeGl({ failCompile: 'fragment' })
 
-    expect(() => createCubeRenderer(gl)).toThrow(/compilation/)
+    expect(() => createMeshRenderer(gl, cube)).toThrow(/compilation/)
 
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
   })
@@ -98,7 +102,7 @@ describe('createCubeRenderer : création', () => {
     const { gl, mocks, liveCounts } = createFakeGl()
     mocks.getUniformLocation.mockReturnValue(null as never)
 
-    expect(() => createCubeRenderer(gl)).toThrow(/introuvable/)
+    expect(() => createMeshRenderer(gl, cube)).toThrow(/introuvable/)
 
     expect(liveCounts().program).toBe(0)
   })
@@ -106,16 +110,16 @@ describe('createCubeRenderer : création', () => {
   it('libère le programme et le VAO si un buffer ne peut pas être créé', () => {
     const { gl, liveCounts } = createFakeGl({ failCreate: 'buffer' })
 
-    expect(() => createCubeRenderer(gl)).toThrow(/buffer/)
+    expect(() => createMeshRenderer(gl, cube)).toThrow(/buffer/)
 
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
   })
 })
 
-describe('createCubeRenderer : viewport et projection', () => {
+describe('createMeshRenderer : viewport et projection', () => {
   it('aligne le viewport sur la taille donnée', () => {
     const { gl, mocks } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.setViewport(800, 400)
 
@@ -124,7 +128,7 @@ describe('createCubeRenderer : viewport et projection', () => {
 
   it("règle l'aspect de la projection sur largeur / hauteur", () => {
     const { gl, lastUniform } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.setViewport(800, 400)
     const wide = lastUniform('uProjection')!
@@ -138,7 +142,7 @@ describe('createCubeRenderer : viewport et projection', () => {
 
   it('refuse une taille nulle plutôt que d\'envoyer une projection pleine de NaN', () => {
     const { gl, mocks, lastUniform } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
     const before = lastUniform('uProjection')
 
     expect(() => renderer.setViewport(0, 100)).toThrow(RangeError)
@@ -147,10 +151,10 @@ describe('createCubeRenderer : viewport et projection', () => {
   })
 })
 
-describe('createCubeRenderer : dessin', () => {
-  it('efface couleur et profondeur, puis dessine les 36 indices du cube', () => {
+describe('createMeshRenderer : dessin', () => {
+  it('efface couleur et profondeur, puis dessine les 36 indices du cube (indices 16 bits)', () => {
     const { gl, mocks } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.draw(0)
 
@@ -161,7 +165,7 @@ describe('createCubeRenderer : dessin', () => {
 
   it("envoie les uniforms du modèle AVANT de dessiner", () => {
     const { gl, mocks, uniformHistory } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
     mocks.uniformMatrix4fv.mockClear()
     mocks.uniformMatrix3fv.mockClear()
 
@@ -176,7 +180,7 @@ describe('createCubeRenderer : dessin', () => {
 
   it("fait tourner le modèle autour de Y avec l'angle donné, et garde l'inclinaison en X", () => {
     const { gl, lastUniform } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.draw(0)
     const atZero = lastUniform('uModel')!
@@ -193,7 +197,7 @@ describe('createCubeRenderer : dessin', () => {
 
   it('envoie une matrice normale qui est la rotation elle-même (rotation pure, pas d\'étirement)', () => {
     const { gl, lastUniform } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.draw(1.1)
 
@@ -205,10 +209,10 @@ describe('createCubeRenderer : dessin', () => {
   })
 })
 
-describe('createCubeRenderer : libération', () => {
+describe('createMeshRenderer : libération', () => {
   it('dispose supprime le programme, les buffers et le VAO', () => {
     const { gl, mocks, liveCounts } = createFakeGl()
-    const renderer = createCubeRenderer(gl)
+    const renderer = createMeshRenderer(gl, cube)
 
     renderer.dispose()
 
@@ -216,5 +220,134 @@ describe('createCubeRenderer : libération', () => {
     expect(mocks.deleteBuffer).toHaveBeenCalledTimes(3)
     expect(mocks.deleteVertexArray).toHaveBeenCalledOnce()
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
+  })
+})
+
+describe('createMeshRenderer : maillage affiché', () => {
+  it('normalise le maillage avant de l\'envoyer : un modèle immense et décalé tient dans la boîte unité', () => {
+    const { gl, attributeBindings } = createFakeGl()
+    const huge: Mesh = {
+      positions: new Float32Array([1000, 1000, 1000, 3000, 1000, 1000, 1000, 2000, 1000]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint16Array([0, 1, 2]),
+    }
+
+    createMeshRenderer(gl, huge)
+
+    const sent = new Float32Array(attributeBindings()[0]!.data)
+    expect(boundingBox({ ...huge, positions: sent })).toEqual({ min: [-1, -0.5, 0], max: [1, 0.5, 0] })
+  })
+
+  it('dessine autant d\'indices que le maillage en a', () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, createPlane())
+
+    renderer.draw(0)
+
+    expect(mocks.drawElements).toHaveBeenCalledExactlyOnceWith(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0)
+  })
+
+  it('dessine avec des indices 32 bits quand le maillage en a (UNSIGNED_INT)', () => {
+    const { gl, mocks } = createFakeGl()
+    const big: Mesh = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+    }
+    const renderer = createMeshRenderer(gl, big)
+
+    renderer.draw(0)
+
+    expect(mocks.drawElements).toHaveBeenCalledExactlyOnceWith(gl.TRIANGLES, 3, gl.UNSIGNED_INT, 0)
+  })
+})
+
+describe('createMeshRenderer : setMesh', () => {
+  it('envoie le nouveau maillage normalisé sur les entrées 0 (positions) et 1 (normales)', () => {
+    const { gl, attributeBindings } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    const sphere = createSphere(8, 4)
+
+    renderer.setMesh(sphere)
+
+    const [positions, normals] = attributeBindings().slice(-2)
+    const expected = normalizeToUnitBox(sphere)
+    expect(positions).toEqual({ location: 0, size: 3, data: Array.from(expected.positions) })
+    expect(normals).toEqual({ location: 1, size: 3, data: Array.from(expected.normals) })
+  })
+
+  it('libère l\'ancien VAO et ses buffers, sans fuite : toujours un seul jeu de ressources vivant', () => {
+    const { gl, mocks, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    const oldVao = mocks.createVertexArray.mock.results[0]!.value
+    const oldBuffers = mocks.createBuffer.mock.results.map((result) => result.value)
+
+    renderer.setMesh(createSphere(8, 4))
+
+    expect(mocks.deleteVertexArray).toHaveBeenCalledExactlyOnceWith(oldVao)
+    expect(mocks.deleteBuffer.mock.calls.map(([buffer]) => buffer)).toEqual(oldBuffers)
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+
+    renderer.setMesh(createPlane())
+    renderer.setMesh(cube)
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+
+    renderer.dispose()
+    expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
+  })
+
+  it('le dessin suivant utilise le nouveau maillage (nombre d\'indices du plan : 6)', () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setMesh(createPlane())
+    renderer.draw(0)
+
+    expect(mocks.drawElements).toHaveBeenCalledExactlyOnceWith(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0)
+  })
+
+  it('passe de 16 à 32 bits d\'un maillage à l\'autre', () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    const big: Mesh = {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+    }
+
+    renderer.setMesh(big)
+    renderer.draw(0)
+
+    expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 3, gl.UNSIGNED_INT, 0)
+  })
+
+  it('si la création du nouveau maillage échoue : l\'erreur remonte et l\'ancien reste affiché, rien ne fuit', () => {
+    const { gl, mocks, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    const oldVao = mocks.createVertexArray.mock.results[0]!.value
+    mocks.createBuffer.mockReturnValue(null) // plus de mémoire GPU
+
+    expect(() => renderer.setMesh(createSphere(8, 4))).toThrow(/buffer/)
+
+    // L'ancien jeu est intact (rien de supprimé) et le nouveau, à moitié créé, a été nettoyé.
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(mocks.deleteVertexArray).toHaveBeenCalledTimes(1) // seulement le VAO du nouveau, pas l'ancien
+    expect(mocks.deleteVertexArray).not.toHaveBeenCalledWith(oldVao)
+    mocks.bindVertexArray.mockClear()
+    renderer.draw(0)
+    expect(mocks.bindVertexArray).toHaveBeenNthCalledWith(1, oldVao) // c'est bien l'ancien maillage qui est dessiné
+    expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
+  })
+
+  it('un maillage vide est refusé et l\'ancien reste affiché', () => {
+    const { gl, mocks, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    const empty: Mesh = { positions: new Float32Array(0), normals: new Float32Array(0), indices: new Uint16Array(0) }
+
+    expect(() => renderer.setMesh(empty)).toThrow(RangeError)
+
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    renderer.draw(0)
+    expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
   })
 })

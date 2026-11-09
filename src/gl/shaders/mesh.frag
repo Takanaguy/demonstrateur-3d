@@ -21,6 +21,13 @@ void main() {
   // L'interpolation raccourcit un peu les vecteurs : on remet la normale à la longueur 1.
   vec3 normal = normalize(vNormal);
 
+  // Le face culling est désactivé (un plan ou un fichier OBJ ouvert doit être visible des deux
+  // côtés) : on voit donc parfois l'ENVERS d'un triangle. Sa normale pointe alors à l'opposé de
+  // l'observateur et l'éclairage serait celui de la face cachée. gl_FrontFacing vaut false quand
+  // le triangle est vu par l'arrière (sommets dans le sens des aiguilles d'une montre) : on
+  // retourne la normale pour éclairer correctement cette face-là.
+  if (!gl_FrontFacing) normal = -normal;
+
   // Loi de Lambert : l'éclairage vaut le cosinus de l'angle entre la normale et la lumière. Le
   // produit scalaire de deux vecteurs unitaires est ce cosinus. max(..., 0) évite un éclairage
   // négatif pour les faces tournées dos à la lumière.

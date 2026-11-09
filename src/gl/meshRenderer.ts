@@ -1,9 +1,10 @@
 /**
- * Dessine le cube éclairé avec WebGL2 : c'est ici que se rejoignent les maths (`core/`), les
- * shaders et les buffers. Aucune dépendance à React : le composant ne fait que l'appeler.
+ * Dessine un maillage éclairé avec WebGL2 (un cube, une sphère, un fichier OBJ...) : c'est ici que
+ * se rejoignent les maths (`core/`), les shaders et les buffers. Aucune dépendance à React : le
+ * composant ne fait que l'appeler.
  *
  * Le pipeline, dans l'ordre :
- * 1. Les SHADERS (cube.vert, cube.frag) sont compilés et liés en un programme.
+ * 1. Les SHADERS (mesh.vert, mesh.frag) sont compilés et liés en un programme.
  * 2. Les BUFFERS (positions, normales, indices) sont copiés sur le GPU et rangés dans un VAO.
  * 3. Les UNIFORMS (matrices, couleur, lumière) sont envoyés au programme.
  * 4. `drawElements` lance le dessin : le GPU exécute le vertex shader sur chaque sommet, rasterise
@@ -11,7 +12,6 @@
  */
 
 import { parseHexColor } from '../core/color'
-import { createCubeGeometry } from '../core/cube'
 import {
   lookAt,
   multiply,
@@ -21,15 +21,15 @@ import {
   rotationY,
   type Mat4,
 } from '../core/mat4'
+import { normalizeToUnitBox, type Mesh } from '../core/mesh'
 import { normalize, type Vec3 } from '../core/vec3'
-import { createIndexedMesh } from './buffers'
+import { createIndexedMesh, type IndexedMesh } from './buffers'
 import { createProgram } from './shader'
-import fragmentSource from './shaders/cube.frag?raw'
-import vertexSource from './shaders/cube.vert?raw'
+import fragmentSource from './shaders/mesh.frag?raw'
+import vertexSource from './shaders/mesh.vert?raw'
 
 const BACKGROUND_COLOR = '#F7F4EE'
-const CUBE_COLOR = '#2E5D7C'
-const CUBE_SIZE = 1.5
+const OBJECT_COLOR = '#2E5D7C'
 
 /** Ouverture verticale de la caméra : 45 degrés, convertis en radians. */
 const FIELD_OF_VIEW = (45 * Math.PI) / 180
@@ -43,8 +43,8 @@ const CAMERA_UP: Vec3 = [0, 1, 0]
 const LIGHT_POSITION: Vec3 = [3, 4, 5]
 
 /**
- * Inclinaison fixe du cube autour de X. Vu pile de face, un cube ressemble à un carré plat.
- * C'est la même valeur que dans la première version du démonstrateur.
+ * Inclinaison fixe de l'objet autour de X. Vu pile de face, un cube ressemble à un carré plat, et
+ * un plan horizontal à un trait. C'est la même valeur que dans la première version du démonstrateur.
  */
 const TILT = 0.4
 
@@ -52,36 +52,51 @@ const TILT = 0.4
 const UNIFORM_NAMES = ['uModel', 'uView', 'uProjection', 'uNormalMatrix', 'uColor', 'uLightDirection'] as const
 type UniformName = (typeof UNIFORM_NAMES)[number]
 
-export interface CubeRenderer {
+export interface MeshRenderer {
   /** Adapte la zone de dessin et la projection à la taille du tampon de dessin, en pixels. */
   setViewport: (width: number, height: number) => void
-  /** Dessine une image, le cube tourné de `angleY` radians autour de l'axe vertical. */
+  /** Dessine une image, l'objet tourné de `angleY` radians autour de l'axe vertical. */
   draw: (angleY: number) => void
+  /**
+   * Remplace le maillage affiché. Le nouveau est créé AVANT de supprimer l'ancien : si sa création
+   * échoue (mémoire GPU, contexte perdu), l'erreur est relancée et l'ancien reste affiché.
+   */
+  setMesh: (mesh: Mesh) => void
   /** Supprime le programme et le maillage (buffers + VAO). */
   dispose: () => void
 }
 
 /**
- * Crée tout ce qu'il faut pour dessiner le cube sur ce contexte. Lève une erreur lisible (avec le
+ * Normalise le maillage dans la boîte unité (centré, côté 2) puis le copie sur le GPU. Cette
+ * normalisation est faite ici, à l'envoi, pour que TOUT ce qui est affiché tienne dans la vue
+ * quelle que soit son unité ou sa position d'origine ; le maillage d'origine, lui, n'est pas modifié
+ * (les statistiques affichées restent celles du fichier).
+ */
+function uploadMesh(gl: WebGL2RenderingContext, mesh: Mesh): IndexedMesh {
+  const { positions, normals, indices } = normalizeToUnitBox(mesh)
+  return createIndexedMesh(gl, {
+    attributes: [
+      { location: 0, size: 3, data: positions }, // aPosition
+      { location: 1, size: 3, data: normals }, // aNormal
+    ],
+    indices,
+  })
+}
+
+/**
+ * Crée tout ce qu'il faut pour dessiner `initialMesh` sur ce contexte. Lève une erreur lisible (avec le
  * journal du compilateur) si les shaders sont refusés ; rien ne reste alors alloué.
  *
  * À rappeler après une perte de contexte : toutes les ressources GPU ont alors disparu.
  */
-export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
+export function createMeshRenderer(gl: WebGL2RenderingContext, initialMesh: Mesh): MeshRenderer {
   const program = createProgram(gl, vertexSource, fragmentSource)
 
-  let mesh: ReturnType<typeof createIndexedMesh>
+  let current: IndexedMesh
   let uniforms: Record<UniformName, WebGLUniformLocation>
   try {
     uniforms = findUniforms(gl, program)
-    const geometry = createCubeGeometry(CUBE_SIZE)
-    mesh = createIndexedMesh(gl, {
-      attributes: [
-        { location: 0, size: 3, data: geometry.positions }, // aPosition
-        { location: 1, size: 3, data: geometry.normals }, // aNormal
-      ],
-      indices: geometry.indices,
-    })
+    current = uploadMesh(gl, initialMesh)
   } catch (error) {
     gl.deleteProgram(program)
     throw error
@@ -92,9 +107,10 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
   const [r, g, b] = parseHexColor(BACKGROUND_COLOR)
   gl.clearColor(r, g, b, 1) // couleur de fond, appliquée par gl.clear
   gl.enable(gl.DEPTH_TEST) // le test de profondeur : un pixel proche cache un pixel lointain
-  gl.enable(gl.CULL_FACE) // ne dessine pas les triangles vus par l'arrière : invisibles sur un cube plein
-  gl.cullFace(gl.BACK) // ce sont bien les faces arrière qu'on écarte (réglage par défaut, explicite ici)
-  gl.frontFace(gl.CCW) // une face « avant » a ses sommets dans le sens inverse des aiguilles d'une montre
+  // Face culling DÉSACTIVÉ (réglage par défaut, rappelé ici pour que ce soit un choix lisible) : un
+  // plan, ou un fichier OBJ qui n'est pas un volume fermé, doit être visible des deux côtés. Le
+  // fragment shader retourne la normale des faces vues par l'arrière pour les éclairer juste.
+  gl.disable(gl.CULL_FACE)
 
   // --- Uniforms qui ne changent pas pendant l'animation : envoyés une seule fois. Un uniform garde
   // sa valeur dans le programme jusqu'à ce qu'on la remplace.
@@ -102,7 +118,7 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
   const view = lookAt(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP)
   // `false` : la matrice est déjà en colonnes-majeures, WebGL n'a pas à la transposer.
   gl.uniformMatrix4fv(uniforms.uView, false, view)
-  gl.uniform3fv(uniforms.uColor, parseHexColor(CUBE_COLOR))
+  gl.uniform3fv(uniforms.uColor, parseHexColor(OBJECT_COLOR))
   // Direction VERS la lumière, normalisée : le shader en fait un produit scalaire avec la normale.
   gl.uniform3fv(uniforms.uLightDirection, normalize(LIGHT_POSITION))
 
@@ -116,7 +132,7 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
   return {
     setViewport(width, height) {
       // Calculée d'abord : une taille invalide lève ici, avant de toucher à l'état du GPU.
-      // L'aspect de la projection suit la forme du canvas, sinon le cube serait étiré.
+      // L'aspect de la projection suit la forme du canvas, sinon l'objet serait étiré.
       const projection = perspective(FIELD_OF_VIEW, width / height, NEAR_PLANE, FAR_PLANE)
       // Le viewport dit au GPU quelle partie du canvas recevoir l'image (ici : tout). Sans lui,
       // le dessin garderait la taille initiale après un redimensionnement.
@@ -125,7 +141,7 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
     },
 
     draw(angleY) {
-      // Le cube tourne sur lui-même autour de Y (appliqué en premier), puis toute la figure est
+      // L'objet tourne sur lui-même autour de Y (appliqué en premier), puis toute la figure est
       // inclinée autour de X.
       const model = multiply(rotationX(TILT), rotationY(angleY))
 
@@ -133,11 +149,18 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
       gl.useProgram(program)
       gl.uniformMatrix4fv(uniforms.uModel, false, model)
       gl.uniformMatrix3fv(uniforms.uNormalMatrix, false, normalMatrix(model))
-      mesh.draw()
+      current.draw()
+    },
+
+    setMesh(mesh) {
+      // Le nouveau maillage est créé d'abord : s'il échoue, `current` n'a pas été touché.
+      const next = uploadMesh(gl, mesh)
+      current.dispose() // libère l'ancien VAO et ses buffers, que le ramasse-miettes ne verrait pas
+      current = next
     },
 
     dispose() {
-      mesh.dispose()
+      current.dispose()
       // Supprime aussi les shaders encore attachés (voir createProgram).
       gl.deleteProgram(program)
     },
@@ -147,7 +170,7 @@ export function createCubeRenderer(gl: WebGL2RenderingContext): CubeRenderer {
 /**
  * Retrouve l'emplacement de chaque uniform. Un nom introuvable est une faute de frappe (ou un
  * uniform que le compilateur a jugé inutile et retiré) : on le signale tout de suite, car WebGL
- * ignorerait sinon sans bruit l'envoi de la valeur et le cube s'afficherait faux.
+ * ignorerait sinon sans bruit l'envoi de la valeur et l'objet s'afficherait faux.
  */
 function findUniforms(gl: WebGL2RenderingContext, program: WebGLProgram): Record<UniformName, WebGLUniformLocation> {
   const locations = {} as Record<UniformName, WebGLUniformLocation>
