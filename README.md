@@ -1,6 +1,6 @@
 # Démonstrateur 3D
 
-Démonstrateur 3D pédagogique, dans le navigateur : à terme, on pourra y charger des formes de base ou des fichiers OBJ, changer le modèle d'éclairage, afficher le fil de fer, les normales et la boîte englobante, et tourner autour de l'objet à la souris. Il s'inspire d'un projet de cours d'OpenGL écrit sans moteur 3D, refait ici avec les technologies du web : du WebGL2 écrit à la main, sans Three.js ni autre bibliothèque 3D.
+Démonstrateur 3D pédagogique, dans le navigateur : on peut y charger des formes de base ou des fichiers OBJ, changer le modèle d'éclairage et tourner autour de l'objet à la souris, au doigt ou au clavier ; à terme, on pourra aussi afficher le fil de fer, les normales et la boîte englobante. Il s'inspire d'un projet de cours d'OpenGL écrit sans moteur 3D, refait ici avec les technologies du web : du WebGL2 écrit à la main, sans Three.js ni autre bibliothèque 3D.
 
 Projet personnel de Tanguy Horard. Il pourra plus tard être intégré comme élément dans un autre projet à lui (un éditeur de présentations) : c'est pour cela que la logique est séparée de l'interface (voir [Structure](#structure-des-dossiers)).
 
@@ -40,9 +40,19 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 - Un changement d'éclairage ne recrée ni le canvas, ni le contexte, ni le maillage ; après une perte de contexte, les derniers réglages reviennent.
 - 473 tests (Vitest) répartis dans 20 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 252,94 kB (80,73 kB compressés en gzip), CSS 11,71 kB (3,16 kB compressés).
 
+**Fait (ticket 4a, caméra orbitale et options de vue)**
+- La caméra n'est plus fixe : on tourne autour de l'objet et on zoome (voir [Commandes](#commandes)). La caméra est décrite en coordonnées sphériques (azimut, élévation, distance) dans `core/camera.ts`, bornée (l'élévation n'atteint jamais les pôles, la distance reste entre 2,5 et 12) et assainie avant d'aller au GPU.
+- L'objet ne reçoit plus d'inclinaison fixe : il tourne seulement sur lui-même autour de l'axe vertical, et l'inclinaison de départ vient de la caméra (élévation 0,4 rad).
+- Un panneau « vue » : case « Rotation automatique de l'objet », case « Masquer les faces vues de dos (culling) » (avec un avertissement : un fichier OBJ aux triangles à l'envers devient invisible), bouton « Réinitialiser la caméra ».
+- La 3D est placée avant les panneaux et reste collée en haut de l'écran sur petit écran, pour voir l'effet des réglages sans remonter (hauteur plafonnée à 45 % de l'écran, et marge de défilement pour que le focus clavier ne passe pas derrière elle).
+- Un glisser abandonné si le bouton a été lâché hors de la fenêtre (`buttons === 0`, `lostpointercapture`), et une phrase d'explication sous la case de rotation automatique quand le système demande moins de mouvement.
+- Le canvas est un composant clavier : il prend le focus, a un contour de focus visible et un rôle ARIA adapté (voir la décision 18).
+- Après une perte de contexte WebGL, la caméra COURANTE et les options de vue reviennent.
+- 617 tests (Vitest) répartis dans 25 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 258,58 kB (82,43 kB compressés en gzip), CSS 12,77 kB (3,52 kB compressés).
+
 **Pas encore fait**
-- Affichage en fil de fer, des normales, de la boîte englobante (la boîte est calculée, pas encore dessinée).
-- Rotation et zoom à la souris.
+- Affichage en fil de fer, des normales, de la boîte englobante, de la grille et des axes (ticket 4b ; la boîte est calculée, pas encore dessinée).
+- Pincement à deux doigts pour zoomer, déplacement latéral (pan).
 - Textures (les coordonnées `vt` d'un fichier OBJ sont lues puis ignorées) et matériaux (`.mtl`).
 - Intégration dans l'éditeur de présentations.
 - Vérification dans un vrai navigateur : les tests tournent dans jsdom, qui n'a pas de WebGL. Les maths, la géométrie, l'analyseur OBJ et les appels WebGL (vérifiés avec un faux contexte) sont testés, mais le rendu réel (formes visibles, éclairage des deux faces, rotation, redimensionnement, chargement d'un vrai fichier OBJ) reste à regarder à la main.
@@ -57,6 +67,18 @@ npm run dev
 ```
 
 Puis ouvrir l'adresse affichée par Vite (en général http://localhost:5173).
+
+## Commandes
+
+Sur l'image 3D (le canvas) :
+
+| Action | Souris | Doigt | Clavier (l'image doit avoir le focus) |
+| --- | --- | --- | --- |
+| Tourner autour de l'objet | Glisser avec le bouton gauche | Glisser | Flèches |
+| Zoomer / dézoomer | Molette | non géré (pas de pincement) | `+` (ou `=`) / `-` |
+| Revenir au point de vue de départ | Bouton « Réinitialiser la caméra » | idem | idem |
+
+Faire glisser de toute la largeur de l'image fait un tour complet. Une flèche a le même effet qu'un glisser dans sa direction. Ctrl, Cmd et Alt avec `+` ou `-` gardent leur rôle de zoom du navigateur. Pour que le glisser tactile tourne la caméra au lieu de faire défiler la page, le canvas désactive le défilement par le toucher (`touch-action: none`) : sur mobile, la page ne défile plus quand le doigt est sur l'image 3D (voir les limites dans [docs/DECISIONS.md](docs/DECISIONS.md)).
 
 ## Scripts
 
@@ -76,20 +98,20 @@ src/
   core/      Logique pure, sans React ni WebGL : matrices (mat4.ts), vecteurs (vec3.ts),
              maillage commun, boîte englobante, normalisation, normales lisses (mesh.ts),
              cube (cube.ts), plan, sphère, cône (shapes.ts), analyseur OBJ (obj.ts),
-             couleurs (color.ts), réglages et formules d'éclairage (lighting.ts), rotation,
-             détection de WebGL.
+             couleurs (color.ts), réglages et formules d'éclairage (lighting.ts), caméra
+             orbitale (camera.ts), options de vue (viewOptions.ts), rotation, détection de WebGL.
   gl/        Tout ce qui parle à WebGL, sans React : compilation des shaders (shader.ts),
              buffers et VAO (buffers.ts), dessin d'un maillage (meshRenderer.ts).
     shaders/   Les shaders en GLSL ES 3.00 : mesh.vert (sommets) et mesh.frag (fragments).
   ui/        Le panneau de choix du maillage (MeshPanel.tsx), l'état « quel maillage afficher »
-             avec le chargement des fichiers (useMeshSelection.ts) et le panneau d'éclairage
-             (LightingPanel.tsx).
+             avec le chargement des fichiers (useMeshSelection.ts), le panneau d'éclairage
+             (LightingPanel.tsx) et le panneau de la vue (ViewPanel.tsx).
   viewer/    Ce qui touche à React pour la 3D : le composant Viewer3D (canvas, boucle
-             d'animation, redimensionnement, changement de maillage et d'éclairage, perte de contexte,
-             nettoyage).
+             d'animation, redimensionnement, changement de maillage, d'éclairage et d'options de vue,
+             commandes de la caméra à la souris, au doigt et au clavier, perte de contexte, nettoyage).
   test/      Réglage des tests (setup.ts), faux contexte WebGL (fakeGl.ts) et son installation
              dans jsdom (installFakeWebGL.ts).
-  App.tsx    Page d'accueil : un titre, les deux panneaux (maillage, éclairage) et le Viewer3D.
+  App.tsx    Page d'accueil : un titre, le Viewer3D puis les trois panneaux (maillage, éclairage, vue).
 docs/
   DECISIONS.md   Choix techniques, raisons, limites connues.
 ```
@@ -100,13 +122,13 @@ Règle de dépendance : `core/` n'importe ni React ni WebGL. `gl/` peut importer
 
 1. **Shaders.** Deux petits programmes écrits en GLSL tournent sur le GPU : le *vertex shader* (`mesh.vert`) place chaque sommet à l'écran, le *fragment shader* (`mesh.frag`) choisit la couleur de chaque pixel (éclairage : Lambert, Blinn-Phong ou gaussien, voir plus bas). `gl/shader.ts` les compile et les lie en un *programme*, et lit le journal du compilateur si cela échoue.
 2. **Buffers et VAO.** Les sommets du maillage (positions, normales) et ses indices (3 par triangle ; 16 bits, ou 32 bits au-delà de 65 535 sommets) sont copiés dans des *buffers*, des blocs de mémoire du GPU. Un *VAO* retient quel buffer alimente quelle entrée du shader : on le configure une fois, puis un seul appel le rebranche à chaque image.
-3. **Matrices.** Trois matrices 4x4 transforment les points : *modèle* (la rotation du cube), *vue* (la position de la caméra), *projection* (la perspective, qui rapetisse ce qui est loin). La *matrice normale* (3x3, inverse transposée du modèle) fait tourner les normales sans les fausser, pour que l'éclairage reste juste. Avant l'envoi, le maillage est recentré et mis à l'échelle (cube de côté 2) : la caméra, elle, ne bouge pas. Elles sont calculées en TypeScript (`core/mat4.ts`) puis envoyées au shader sous forme d'*uniforms*, des valeurs communes à tous les sommets d'un même dessin.
+3. **Matrices.** Trois matrices 4x4 transforment les points : *modèle* (la rotation de l'objet sur lui-même), *vue* (la position de la caméra), *projection* (la perspective, qui rapetisse ce qui est loin). La *matrice normale* (3x3, inverse transposée du modèle) fait tourner les normales sans les fausser, pour que l'éclairage reste juste. Avant l'envoi, le maillage est recentré et mis à l'échelle (cube de côté 2) : la caméra, elle, tourne toujours autour de l'origine, donc autour du centre de l'objet. La matrice de vue est recalculée à chaque image depuis la caméra courante (`lookAt`, avec la même position envoyée au fragment shader pour le reflet). Elles sont calculées en TypeScript (`core/mat4.ts`) puis envoyées au shader sous forme d'*uniforms*, des valeurs communes à tous les sommets d'un même dessin.
 4. **Éclairage.** Les réglages de la lumière (modèle, position, couleur, reflet) sont aussi des uniforms, envoyés par `setLighting` seulement quand l'utilisateur les change, pas à chaque image. Voir la section suivante.
-5. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé, on envoie les uniforms du modèle, puis `drawElements` lance le dessin. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche.
+5. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé (si la rotation automatique est active), on envoie la caméra courante et les uniforms du modèle, puis `drawElements` lance le dessin. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche.
 
 ## Comment un pixel est éclairé (`mesh.frag`)
 
-Pour chaque pixel, le fragment shader connaît sa position dans le monde (`vWorldPosition`, calculée par le vertex shader puis interpolée) et sa normale. Il en déduit trois vecteurs de longueur 1 : **N** la normale, **L** la direction vers la lumière (position de la lumière moins position du pixel, normalisée) et **V** la direction vers l'oeil (la caméra est en (0, 0, 5)).
+Pour chaque pixel, le fragment shader connaît sa position dans le monde (`vWorldPosition`, calculée par le vertex shader puis interpolée) et sa normale. Il en déduit trois vecteurs de longueur 1 : **N** la normale, **L** la direction vers la lumière (position de la lumière moins position du pixel, normalisée) et **V** la direction vers l'oeil (la position de la caméra, qui change quand on tourne autour de l'objet, est envoyée avec la matrice de vue).
 
 1. **Diffus (les trois modèles).** `max(N·L, 0)` : le cosinus de l'angle entre la normale et la lumière. Une face de face à la lumière est pleine, une face de côté ou dos à la lumière ne reçoit rien.
 2. **Reflet (Blinn-Phong et Gaussien seulement).** On calcule **H**, le vecteur de demi-angle (le milieu entre L et V, normalisé). Quand la normale pointe vers H, la lumière se réfléchit droit vers l'oeil : c'est le point le plus brillant. Le reflet n'existe que si N·L > 0.

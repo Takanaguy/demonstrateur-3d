@@ -1,7 +1,8 @@
 /**
  * Installe un faux WebGL2 dans jsdom pour monter le composant `Viewer3D` (ou toute l'application)
- * dans un test. Même principe que dans `Viewer3D.lifecycle.test.tsx`, en plus court : ici les
- * images d'animation ne sont jamais jouées (on teste l'envoi des maillages, pas la rotation).
+ * dans un test. Même principe que dans `Viewer3D.lifecycle.test.tsx`, en plus court : les images
+ * d'animation ne sont jouées que si le test appelle `runFrame` (la plupart ne testent que l'envoi
+ * des maillages et des réglages, pas la boucle de dessin).
  *
  * À appeler dans un `beforeEach`. Le test doit appeler `vi.unstubAllGlobals()` et
  * `vi.restoreAllMocks()` dans son `afterEach`.
@@ -31,8 +32,17 @@ export function installFakeWebGL(fakeOptions: Omit<FakeGlOptions, 'size'> = {}) 
     return fake.gl
   } as never)
 
-  vi.stubGlobal('requestAnimationFrame', () => 1)
-  vi.stubGlobal('cancelAnimationFrame', () => {})
+  // Images demandées et pas encore jouées, par numéro : `runFrame` joue la plus ancienne.
+  const frames = new Map<number, FrameRequestCallback>()
+  let nextFrameId = 1
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = nextFrameId++
+    frames.set(id, callback)
+    return id
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+    frames.delete(id)
+  })
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -51,6 +61,15 @@ export function installFakeWebGL(fakeOptions: Omit<FakeGlOptions, 'size'> = {}) 
       if (!fake) throw new Error('Aucun canvas de page n\'a obtenu de contexte.')
       return fake
     },
+    /** Joue l'image d'animation en attente, à l'instant `time` (en millisecondes). */
+    runFrame(time: number) {
+      const [id, callback] = [...frames][0] ?? []
+      if (id === undefined || !callback) throw new Error("Aucune image d'animation en attente.")
+      frames.delete(id)
+      act(() => callback(time))
+    },
+    /** Nombre d'images d'animation demandées et pas encore jouées (0 : la boucle est arrêtée). */
+    pendingFrames: () => frames.size,
     /** Simule la perte puis la restauration du contexte, le GPU ayant tout détruit entre les deux. */
     loseAndRestoreContext(canvas: HTMLCanvasElement, fake: FakeGl) {
       act(() => {

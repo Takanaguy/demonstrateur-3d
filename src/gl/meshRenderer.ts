@@ -6,24 +6,25 @@
  * Le pipeline, dans l'ordre :
  * 1. Les SHADERS (mesh.vert, mesh.frag) sont compilés et liés en un programme.
  * 2. Les BUFFERS (positions, normales, indices) sont copiés sur le GPU et rangés dans un VAO.
- * 3. Les UNIFORMS (matrices, couleur, réglages de la lumière) sont envoyés au programme.
+ * 3. Les UNIFORMS (matrices, position de la caméra, couleur, réglages de la lumière) sont envoyés au
+ *    programme.
  * 4. `drawElements` lance le dessin : le GPU exécute le vertex shader sur chaque sommet, rasterise
  *    les triangles en pixels, puis exécute le fragment shader sur chaque pixel.
  */
 
 import { parseHexColor } from '../core/color'
 import {
-  lookAt,
-  multiply,
-  normalMatrix,
-  perspective,
-  rotationX,
-  rotationY,
-  type Mat4,
-} from '../core/mat4'
+  CAMERA_TARGET,
+  CAMERA_UP,
+  DEFAULT_CAMERA,
+  cameraPosition,
+  sanitizeCamera,
+  type OrbitCamera,
+} from '../core/camera'
+import { lookAt, normalMatrix, perspective, rotationY, type Mat4 } from '../core/mat4'
 import { DEFAULT_LIGHTING, sanitizeLighting, type LightingModel, type LightingSettings } from '../core/lighting'
 import { normalizeToUnitBox, type Mesh } from '../core/mesh'
-import type { Vec3 } from '../core/vec3'
+import { DEFAULT_VIEW_OPTIONS, type ViewOptions } from '../core/viewOptions'
 import { createIndexedMesh, type IndexedMesh } from './buffers'
 import { createProgram } from './shader'
 import fragmentSource from './shaders/mesh.frag?raw'
@@ -36,15 +37,6 @@ const OBJECT_COLOR = '#2E5D7C'
 const FIELD_OF_VIEW = (45 * Math.PI) / 180
 const NEAR_PLANE = 0.1
 const FAR_PLANE = 100
-const CAMERA_POSITION: Vec3 = [0, 0, 5]
-const CAMERA_TARGET: Vec3 = [0, 0, 0]
-const CAMERA_UP: Vec3 = [0, 1, 0]
-
-/**
- * Inclinaison fixe de l'objet autour de X. Vu pile de face, un cube ressemble à un carré plat, et
- * un plan horizontal à un trait. C'est la même valeur que dans la première version du démonstrateur.
- */
-const TILT = 0.4
 
 /**
  * Numéro de chaque modèle d'éclairage, tel que le lit le fragment shader (uniform entier
@@ -82,6 +74,14 @@ export interface MeshRenderer {
   /** Dessine une image, l'objet tourné de `angleY` radians autour de l'axe vertical. */
   draw: (angleY: number) => void
   /**
+   * Place la caméra. La caméra est d'abord assainie (bornée, jamais de NaN), puis la matrice de vue ET
+   * la position de l'oeil (que le fragment shader utilise pour le reflet) sont recalculées ensemble,
+   * à partir de la même position : elles ne peuvent pas se contredire. Le prochain dessin les utilise.
+   */
+  setCamera: (camera: OrbitCamera) => void
+  /** Change les options de vue (face culling...). Le prochain dessin les utilise. */
+  setViewOptions: (options: ViewOptions) => void
+  /**
    * Remplace le maillage affiché. Le nouveau est créé AVANT de supprimer l'ancien : si sa création
    * échoue (mémoire GPU, contexte perdu), l'erreur est relancée et l'ancien reste affiché.
    */
@@ -116,12 +116,16 @@ function uploadMesh(gl: WebGL2RenderingContext, mesh: Mesh): IndexedMesh {
  * Crée tout ce qu'il faut pour dessiner `initialMesh` sur ce contexte. Lève une erreur lisible (avec le
  * journal du compilateur) si les shaders sont refusés ; rien ne reste alors alloué.
  *
- * À rappeler après une perte de contexte : toutes les ressources GPU ont alors disparu.
+ * À rappeler après une perte de contexte : toutes les ressources GPU ont alors disparu, et avec elles
+ * la caméra, les options de vue et l'éclairage envoyés. L'appelant redonne donc les DERNIERS réglages
+ * par les paramètres (valeurs par défaut sinon).
  */
 export function createMeshRenderer(
   gl: WebGL2RenderingContext,
   initialMesh: Mesh,
   initialLighting: LightingSettings = DEFAULT_LIGHTING,
+  initialCamera: OrbitCamera = DEFAULT_CAMERA,
+  initialViewOptions: ViewOptions = DEFAULT_VIEW_OPTIONS,
 ): MeshRenderer {
   const program = createProgram(gl, vertexSource, fragmentSource)
 
@@ -140,21 +144,43 @@ export function createMeshRenderer(
   const [r, g, b] = parseHexColor(BACKGROUND_COLOR)
   gl.clearColor(r, g, b, 1) // couleur de fond, appliquée par gl.clear
   gl.enable(gl.DEPTH_TEST) // le test de profondeur : un pixel proche cache un pixel lointain
-  // Face culling DÉSACTIVÉ (réglage par défaut, rappelé ici pour que ce soit un choix lisible) : un
-  // plan, ou un fichier OBJ qui n'est pas un volume fermé, doit être visible des deux côtés. Le
-  // fragment shader retourne la normale des faces vues par l'arrière pour les éclairer juste.
-  gl.disable(gl.CULL_FACE)
 
-  // --- Uniforms qui ne changent pas pendant l'animation : envoyés une seule fois. Un uniform garde
-  // sa valeur dans le programme jusqu'à ce qu'on la remplace.
+  // --- Uniform qui ne change jamais : envoyé une seule fois. Un uniform garde sa valeur dans le
+  // programme jusqu'à ce qu'on la remplace.
   gl.useProgram(program)
-  const view = lookAt(CAMERA_POSITION, CAMERA_TARGET, CAMERA_UP)
-  // `false` : la matrice est déjà en colonnes-majeures, WebGL n'a pas à la transposer.
-  gl.uniformMatrix4fv(uniforms.uView, false, view)
   gl.uniform3fv(uniforms.uColor, parseHexColor(OBJECT_COLOR))
-  // La caméra ne bouge pas : sa position (la même que celle de la matrice de vue) sert au fragment
-  // shader à calculer, pour chaque pixel, la direction vers l'oeil (nécessaire au reflet).
-  gl.uniform3fv(uniforms.uCameraPosition, CAMERA_POSITION)
+
+  // --- Caméra : elle bouge à la souris, donc elle a sa propre fonction, appelée ici au départ puis
+  // par `setCamera`. Elle refait `useProgram` car elle peut être appelée à n'importe quel moment.
+  const applyCamera = (camera: OrbitCamera) => {
+    // Assainie AVANT tout calcul : un NaN dans la matrice de vue ferait disparaître l'objet sans erreur.
+    const position = cameraPosition(sanitizeCamera(camera))
+    // Calculée avant de toucher au GPU : si `lookAt` levait une erreur, aucun uniform ne serait à
+    // moitié envoyé. (Elle ne le peut pas ici : l'élévation bornée écarte la caméra des pôles.)
+    const view = lookAt(position, CAMERA_TARGET, CAMERA_UP)
+    gl.useProgram(program)
+    // `false` : la matrice est déjà en colonnes-majeures, WebGL n'a pas à la transposer.
+    gl.uniformMatrix4fv(uniforms.uView, false, view)
+    // La position de l'oeil vient du MÊME calcul que la matrice de vue : le fragment shader s'en sert
+    // pour la direction vers l'oeil (le reflet), qui serait fausse si elle restait celle d'avant.
+    gl.uniform3fv(uniforms.uCameraPosition, position)
+  }
+  applyCamera(initialCamera)
+
+  // --- Options de vue. Refaites à la création : un contexte restauré repart avec le culling désactivé.
+  const applyViewOptions = (options: ViewOptions) => {
+    if (options.backfaceCulling) {
+      gl.enable(gl.CULL_FACE)
+      gl.cullFace(gl.BACK) // ne pas dessiner les triangles vus par l'arrière (c'est la valeur par défaut, rappelée)
+    } else {
+      // Culling DÉSACTIVÉ : un plan, ou un fichier OBJ qui n'est pas un volume fermé, doit être
+      // visible des deux côtés. Le fragment shader retourne alors la normale des faces vues par
+      // l'arrière (gl_FrontFacing) pour les éclairer juste ; avec le culling, ces faces ne sont plus
+      // dessinées et ce retournement ne sert plus à rien.
+      gl.disable(gl.CULL_FACE)
+    }
+  }
+  applyViewOptions(initialViewOptions)
 
   // --- Éclairage : il change quand l'utilisateur touche aux réglages, donc il a sa propre fonction,
   // appelée ici au départ puis par `setLighting`. Elle refait `useProgram` car elle peut être
@@ -194,9 +220,9 @@ export function createMeshRenderer(
     },
 
     draw(angleY) {
-      // L'objet tourne sur lui-même autour de Y (appliqué en premier), puis toute la figure est
-      // inclinée autour de X.
-      const model = multiply(rotationX(TILT), rotationY(angleY))
+      // L'objet tourne seulement sur lui-même autour de Y. L'inclinaison d'avant vient maintenant de
+      // la caméra (son élévation) : on ne penche plus l'objet, on change le point de vue.
+      const model = rotationY(angleY)
 
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT) // efface l'image précédente et les profondeurs
       gl.useProgram(program)
@@ -214,6 +240,10 @@ export function createMeshRenderer(
     },
 
     setLighting: applyLighting,
+
+    setCamera: applyCamera,
+
+    setViewOptions: applyViewOptions,
 
     dispose() {
       current.dispose()

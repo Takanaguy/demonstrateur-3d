@@ -1,7 +1,10 @@
+import { DEFAULT_CAMERA, DISTANCE_RANGE, ELEVATION_RANGE, cameraPosition, type OrbitCamera } from '../core/camera'
 import { createCubeGeometry } from '../core/cube'
+import { lookAt } from '../core/mat4'
 import { boundingBox, normalizeToUnitBox, type Mesh } from '../core/mesh'
 import { createPlane, createSphere } from '../core/shapes'
 import { DEFAULT_LIGHTING, type LightingSettings } from '../core/lighting'
+import { DEFAULT_VIEW_OPTIONS } from '../core/viewOptions'
 import { createFakeGl } from '../test/fakeGl'
 import { createMeshRenderer } from './meshRenderer'
 
@@ -43,22 +46,28 @@ describe('createMeshRenderer : création', () => {
     expect(color[2]).toBeCloseTo(0x7c / 255)
   })
 
-  it("envoie la position de la caméra (0, 0, 5), la même que celle de la matrice de vue, pour calculer la direction vers l'oeil", () => {
+  it("envoie la position de la caméra de départ, la même que celle de la matrice de vue, pour calculer la direction vers l'oeil", () => {
     const { gl, lastUniform } = createFakeGl()
 
     createMeshRenderer(gl, cube)
 
-    expect(lastUniform('uCameraPosition')).toEqual([0, 0, 5])
+    const position = lastUniform('uCameraPosition')!
+    expect(position[0]).toBeCloseTo(0)
+    expect(position[1]).toBeCloseTo(5 * Math.sin(0.4))
+    expect(position[2]).toBeCloseTo(5 * Math.cos(0.4))
   })
 
-  it('envoie la matrice de vue de la caméra placée en (0, 0, 5) : translation de -5 en Z', () => {
+  it("envoie la matrice de vue de la caméra de départ : l'origine est à 5 unités devant la caméra", () => {
     const { gl, lastUniform } = createFakeGl()
 
     createMeshRenderer(gl, cube)
 
     const view = lastUniform('uView')!
+    // Dernière colonne : l'origine dans le repère de la caméra. Elle est sur l'axe du regard (x = y = 0),
+    // à 5 unités devant (le regard va vers -Z).
+    expect(view[12]).toBeCloseTo(0)
+    expect(view[13]).toBeCloseTo(0)
     expect(view[14]).toBeCloseTo(-5)
-    expect(view[0]).toBeCloseTo(1)
   })
 
   it("branche les positions sur l'entrée 0 et les normales sur l'entrée 1, comme le vertex shader les lit", () => {
@@ -284,6 +293,212 @@ describe('createMeshRenderer : éclairage', () => {
   })
 })
 
+describe('createMeshRenderer : caméra', () => {
+  const FAR_CAMERA: OrbitCamera = { azimuth: Math.PI / 2, elevation: 0.5, distance: 8 }
+
+  it("setCamera envoie la matrice de vue ET la position de l'oeil, calculées ensemble", () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setCamera(FAR_CAMERA)
+
+    const position = lastUniform('uCameraPosition')!
+    expect(position[0]).toBeCloseTo(8 * Math.cos(0.5)) // azimut PI/2 : la caméra est du côté +X
+    expect(position[1]).toBeCloseTo(8 * Math.sin(0.5))
+    expect(position[2]).toBeCloseTo(0)
+    // La matrice envoyée est celle d'un lookAt depuis CETTE position : les deux uniforms ne peuvent
+    // pas se contredire (le reflet serait faux).
+    const expectedView = lookAt([position[0]!, position[1]!, position[2]!], [0, 0, 0], [0, 1, 0])
+    const view = lastUniform('uView')!
+    expectedView.forEach((value, i) => expect(view[i]).toBeCloseTo(value))
+  })
+
+  it('la position envoyée est celle de cameraPosition, pour la caméra donnée', () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setCamera(FAR_CAMERA)
+
+    expect(lastUniform('uCameraPosition')).toEqual(Array.from(cameraPosition(FAR_CAMERA)))
+  })
+
+  it('applique la caméra donnée à la création plutôt que celle par défaut', () => {
+    const { gl, lastUniform } = createFakeGl()
+
+    createMeshRenderer(gl, cube, DEFAULT_LIGHTING, FAR_CAMERA)
+
+    expect(lastUniform('uCameraPosition')).toEqual(Array.from(cameraPosition(FAR_CAMERA)))
+  })
+
+  it("active le programme AVANT d'envoyer les uniforms de la caméra (sinon ils iraient au mauvais programme)", () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.useProgram.mockClear()
+    mocks.uniformMatrix4fv.mockClear()
+    mocks.uniform3fv.mockClear()
+
+    renderer.setCamera(FAR_CAMERA)
+
+    expect(mocks.useProgram).toHaveBeenCalledOnce()
+    const useProgramOrder = mocks.useProgram.mock.invocationCallOrder[0]!
+    expect(useProgramOrder).toBeLessThan(mocks.uniformMatrix4fv.mock.invocationCallOrder[0]!)
+    expect(useProgramOrder).toBeLessThan(mocks.uniform3fv.mock.invocationCallOrder[0]!)
+  })
+
+  it('ne transpose pas la matrice de vue', () => {
+    const { gl, uniformHistory } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setCamera(FAR_CAMERA)
+
+    expect(uniformHistory('uView').every((call) => call.transpose === false)).toBe(true)
+  })
+
+  it("borne la caméra avant de l'envoyer : trop loin, trop près, trop haut", () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setCamera({ azimuth: 0, elevation: 99, distance: 1000 })
+
+    const far = lastUniform('uCameraPosition')!
+    // Ramenée à la distance maximale ET à l'élévation maximale (pas plus haut que le pôle).
+    expect(Math.hypot(far[0]!, far[1]!, far[2]!)).toBeCloseTo(DISTANCE_RANGE.max)
+    expect(far[1]).toBeCloseTo(DISTANCE_RANGE.max * Math.sin(ELEVATION_RANGE.max))
+    renderer.setCamera({ azimuth: 0, elevation: 0, distance: 0.01 })
+    const near = lastUniform('uCameraPosition')!
+    expect(Math.hypot(near[0]!, near[1]!, near[2]!)).toBeCloseTo(DISTANCE_RANGE.min)
+  })
+
+  it("n'envoie JAMAIS de NaN ni d'infini, et ne lève pas, même avec une caméra folle (au départ comme après)", () => {
+    const crazy: OrbitCamera = { azimuth: Number.NaN, elevation: Number.POSITIVE_INFINITY, distance: Number.NEGATIVE_INFINITY }
+    const { gl, uniformHistory, lastUniform } = createFakeGl()
+
+    const renderer = createMeshRenderer(gl, cube, DEFAULT_LIGHTING, crazy)
+    expect(() => renderer.setCamera(crazy)).not.toThrow()
+
+    for (const name of ['uView', 'uCameraPosition']) {
+      const sent = uniformHistory(name).flatMap((call) => call.values)
+      expect(sent.length, name).toBeGreaterThan(0)
+      expect(sent.every(Number.isFinite), name).toBe(true)
+    }
+    // Les valeurs par défaut sont revenues à la place.
+    expect(lastUniform('uCameraPosition')).toEqual(Array.from(cameraPosition(DEFAULT_CAMERA)))
+  })
+
+  it('une élévation au pôle ne fait pas échouer lookAt (la borne est appliquée avant)', () => {
+    const { gl } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    expect(() => renderer.setCamera({ azimuth: 1, elevation: Math.PI / 2, distance: 5 })).not.toThrow()
+    expect(() => renderer.setCamera({ azimuth: 1, elevation: -Math.PI / 2, distance: 5 })).not.toThrow()
+  })
+
+  it("setCamera ne touche ni au maillage, ni à l'éclairage, ni aux autres matrices", () => {
+    const { gl, mocks, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.createVertexArray.mockClear()
+    mocks.uniform1i.mockClear()
+    mocks.uniform1f.mockClear()
+    mocks.uniformMatrix3fv.mockClear()
+    mocks.uniformMatrix4fv.mockClear()
+
+    renderer.setCamera(FAR_CAMERA)
+
+    expect(mocks.createVertexArray).not.toHaveBeenCalled()
+    expect(mocks.uniform1i).not.toHaveBeenCalled()
+    expect(mocks.uniform1f).not.toHaveBeenCalled()
+    expect(mocks.uniformMatrix3fv).not.toHaveBeenCalled()
+    // Une seule matrice 4x4 envoyée : la vue (ni modèle ni projection).
+    expect(mocks.uniformMatrix4fv).toHaveBeenCalledOnce()
+    expect((mocks.uniformMatrix4fv.mock.calls[0]![0] as unknown as { name: string }).name).toBe('uView')
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+  })
+
+  it('dessiner ne renvoie pas la caméra : elle garde la dernière donnée par setCamera', () => {
+    const { gl, uniformHistory } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    renderer.setCamera(FAR_CAMERA)
+    const sent = uniformHistory('uView').length
+
+    renderer.draw(0.2)
+    renderer.draw(0.4)
+
+    expect(uniformHistory('uView')).toHaveLength(sent)
+  })
+})
+
+describe('createMeshRenderer : options de vue', () => {
+  it('par défaut : face culling désactivé, test de profondeur actif', () => {
+    const { gl, isEnabled } = createFakeGl()
+
+    createMeshRenderer(gl, cube)
+
+    expect(isEnabled(gl.CULL_FACE)).toBe(false)
+    expect(isEnabled(gl.DEPTH_TEST)).toBe(true)
+  })
+
+  it('backfaceCulling à true : active CULL_FACE et élimine les faces BACK (vues de dos)', () => {
+    const { gl, mocks, isEnabled, cullFaceMode } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setViewOptions({ ...DEFAULT_VIEW_OPTIONS, backfaceCulling: true })
+
+    expect(isEnabled(gl.CULL_FACE)).toBe(true)
+    expect(mocks.enable).toHaveBeenCalledWith(gl.CULL_FACE)
+    expect(cullFaceMode()).toBe(gl.BACK)
+    expect(mocks.cullFace).toHaveBeenCalledWith(gl.BACK)
+  })
+
+  it('backfaceCulling repassé à false : désactive de nouveau CULL_FACE', () => {
+    const { gl, isEnabled } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    renderer.setViewOptions({ ...DEFAULT_VIEW_OPTIONS, backfaceCulling: true })
+
+    renderer.setViewOptions({ ...DEFAULT_VIEW_OPTIONS, backfaceCulling: false })
+
+    expect(isEnabled(gl.CULL_FACE)).toBe(false)
+  })
+
+  it('applique les options données à la création (culling actif dès le départ)', () => {
+    const { gl, isEnabled, cullFaceMode } = createFakeGl()
+
+    createMeshRenderer(gl, cube, DEFAULT_LIGHTING, DEFAULT_CAMERA, { autoRotate: true, backfaceCulling: true })
+
+    expect(isEnabled(gl.CULL_FACE)).toBe(true)
+    expect(cullFaceMode()).toBe(gl.BACK)
+  })
+
+  it('setViewOptions ne touche ni à la profondeur, ni aux uniforms, ni au maillage', () => {
+    const { gl, mocks, isEnabled, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.createVertexArray.mockClear()
+    mocks.uniformMatrix4fv.mockClear()
+    mocks.uniform1i.mockClear()
+    mocks.uniform3fv.mockClear()
+
+    renderer.setViewOptions({ ...DEFAULT_VIEW_OPTIONS, backfaceCulling: true })
+
+    expect(isEnabled(gl.DEPTH_TEST)).toBe(true)
+    expect(mocks.createVertexArray).not.toHaveBeenCalled()
+    expect(mocks.uniformMatrix4fv).not.toHaveBeenCalled()
+    expect(mocks.uniform1i).not.toHaveBeenCalled()
+    expect(mocks.uniform3fv).not.toHaveBeenCalled()
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+  })
+
+  it("autoRotate n'est pas l'affaire du renderer : le changer ne touche pas au GPU", () => {
+    const { gl, mocks, isEnabled } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.enable.mockClear()
+
+    renderer.setViewOptions({ autoRotate: false, backfaceCulling: false })
+
+    // Seul backfaceCulling compte : le culling reste désactivé et rien n'est activé.
+    expect(mocks.enable).not.toHaveBeenCalled()
+    expect(isEnabled(gl.CULL_FACE)).toBe(false)
+  })
+})
+
 describe('createMeshRenderer : viewport et projection', () => {
   it('aligne le viewport sur la taille donnée', () => {
     const { gl, mocks } = createFakeGl()
@@ -346,21 +561,23 @@ describe('createMeshRenderer : dessin', () => {
     expect(mocks.uniformMatrix3fv.mock.invocationCallOrder[0]).toBeLessThan(drawOrder)
   })
 
-  it("fait tourner le modèle autour de Y avec l'angle donné, et garde l'inclinaison en X", () => {
+  it("fait tourner le modèle UNIQUEMENT autour de Y (plus d'inclinaison : elle vient de la caméra)", () => {
     const { gl, lastUniform } = createFakeGl()
     const renderer = createMeshRenderer(gl, cube)
 
     renderer.draw(0)
-    const atZero = lastUniform('uModel')!
+    const atZero = Array.from(lastUniform('uModel')!)
     renderer.draw(Math.PI / 2)
     const atQuarter = lastUniform('uModel')!
 
-    // À l'angle 0 il ne reste que l'inclinaison de 0,4 rad autour de X : l'axe X est inchangé.
-    expect(atZero[0]).toBeCloseTo(1)
-    expect(atZero[5]).toBeCloseTo(Math.cos(0.4))
-    // Après un quart de tour, l'axe X du cube pointe vers -Z (puis est incliné par la rotation en X).
+    // À l'angle 0 le modèle ne bouge rien : c'est l'identité (avant, il restait 0,4 rad autour de X).
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    identity.forEach((value, i) => expect(atZero[i]).toBeCloseTo(value)) // toBeCloseTo : -0 et 0 sont égaux
+    // Après un quart de tour autour de Y, l'axe X du cube pointe vers -Z, et l'axe Y ne bouge pas.
     expect(atQuarter[0]).toBeCloseTo(0)
-    expect(atQuarter).not.toEqual(atZero)
+    expect(atQuarter[2]).toBeCloseTo(-1)
+    expect(atQuarter[5]).toBeCloseTo(1)
+    expect(atQuarter[6]).toBeCloseTo(0)
   })
 
   it('envoie une matrice normale qui est la rotation elle-même (rotation pure, pas d\'étirement)', () => {

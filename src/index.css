@@ -1,1 +1,22 @@
 @import "tailwindcss";
+
+/*
+ * Sous `md` (48rem), la 3D est collée en haut de l'écran (voir App.tsx). Quand le clavier met le focus
+ * sur un champ ou un bouton plus bas dans la page, le navigateur le fait défiler jusqu'en haut de
+ * l'écran : sans marge, il se retrouverait caché derrière la 3D collée. `scroll-padding-top` lui dit de
+ * s'arrêter sous elle.
+ *
+ * La valeur est la hauteur de la 3D collée : le canvas fait 16/9 sur la largeur de la page (100vw moins
+ * les 2 x 1.5rem de marge de <main>), plafonné à 45vh (le `max-h-[45vh]` d'App.tsx), plus 1rem pour
+ * le `py-2` du bloc collant, plus 0.5rem d'air entre la 3D et l'élément focalisé. À partir de `md`
+ * elle n'est plus collée : plus de marge.
+ */
+html {
+  scroll-padding-top: calc(min((100vw - 3rem) * 9 / 16, 45vh) + 1.5rem);
+}
+
+@media (min-width: 48rem) {
+  html {
+    scroll-padding-top: 0;
+  }
+}

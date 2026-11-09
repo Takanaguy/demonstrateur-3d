@@ -34,11 +34,13 @@ void main() {
   // L'interpolation raccourcit un peu les vecteurs : on remet la normale à la longueur 1.
   vec3 normal = normalize(vNormal);
 
-  // Le face culling est désactivé (un plan ou un fichier OBJ ouvert doit être visible des deux
-  // côtés) : on voit donc parfois l'ENVERS d'un triangle. Sa normale pointe alors à l'opposé de
+  // Par défaut le face culling est désactivé (un plan ou un fichier OBJ ouvert doit être visible des
+  // deux côtés) : on voit donc parfois l'ENVERS d'un triangle. Sa normale pointe alors à l'opposé de
   // l'observateur et l'éclairage serait celui de la face cachée. gl_FrontFacing vaut false quand
   // le triangle est vu par l'arrière (sommets dans le sens des aiguilles d'une montre) : on
-  // retourne la normale pour éclairer correctement cette face-là.
+  // retourne la normale pour éclairer correctement cette face-là. Quand l'utilisateur active le
+  // culling, ces triangles ne sont plus dessinés du tout : gl_FrontFacing vaut toujours true et
+  // cette ligne ne sert plus qu'au mode sans culling.
   if (!gl_FrontFacing) normal = -normal;
 
   // La lumière est ponctuelle : sa direction dépend du pixel. L = direction VERS la lumière,

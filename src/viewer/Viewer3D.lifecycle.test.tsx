@@ -135,7 +135,9 @@ describe('Viewer3D : création', () => {
     expect(fake.liveCounts()).toEqual(ONE_CUBE_ALIVE)
     expect(fake.mocks.enable).toHaveBeenCalledWith(fake.gl.DEPTH_TEST)
     expect(fake.mocks.enable).not.toHaveBeenCalledWith(fake.gl.CULL_FACE)
-    expect(canvas).toHaveAttribute('role', 'img')
+    // Un canvas qu'on manipule n'est plus une image : rôle « application », focusable au clavier.
+    expect(canvas).toHaveAttribute('role', 'application')
+    expect(canvas).toHaveAttribute('tabindex', '0')
     expect(canvas).toHaveAccessibleName(/objet en 3D/i)
   })
 

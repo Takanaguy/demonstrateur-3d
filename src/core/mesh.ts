@@ -77,8 +77,9 @@ export function boundingBox(mesh: Mesh): BoundingBox | null {
  * (de -1 à +1 sur chaque axe). Renvoie un NOUVEAU maillage, l'original n'est pas modifié.
  *
  * POURQUOI. Un fichier OBJ n'a pas d'unité : un modèle peut mesurer 2 centimètres ou 2000
- * unités, et être décalé loin de l'origine. La caméra, elle, est fixe. En ramenant tout dans la
- * même boîte, n'importe quel fichier est visible en entier.
+ * unités, et être décalé loin de l'origine. La caméra, elle, tourne toujours autour de l'origine
+ * (voir `core/camera.ts`). En ramenant tout dans la même boîte, n'importe quel fichier est visible
+ * en entier, et le centre de rotation de la caméra est bien le centre de l'objet.
  *
  * UNE SEULE échelle pour les trois axes : on divise par la plus grande dimension de la boîte, pas
  * axe par axe, sinon l'objet serait déformé (une voiture écrasée en cube). Le plus grand côté

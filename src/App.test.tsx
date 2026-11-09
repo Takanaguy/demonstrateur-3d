@@ -390,3 +390,169 @@ describe('App : éclairage', () => {
     expect(fake.lastUniform('uLightPosition')).toEqual([3, -3, 5])
   })
 })
+
+describe('App : vue et caméra', () => {
+  const AUTO_ROTATE = "Rotation automatique de l'objet"
+  const CULLING = 'Masquer les faces vues de dos (culling)'
+
+  it('affiche les trois panneaux (maillage, éclairage, vue) avec leurs réglages', () => {
+    render(<App />)
+
+    expect(screen.getByRole('region', { name: "Choix de l'objet affiché" })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: "Réglages de l'éclairage" })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Réglages de la vue' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: AUTO_ROTATE })).toBeChecked()
+    expect(screen.getByRole('checkbox', { name: CULLING })).not.toBeChecked()
+  })
+
+  it('la 3D est placée AVANT les panneaux dans la page, et collée en haut sur petit écran (sticky jusqu\'à md)', () => {
+    const { container } = render(<App />)
+    const canvas = container.querySelector('canvas')!
+
+    for (const name of ["Choix de l'objet affiché", "Réglages de l'éclairage", 'Réglages de la vue']) {
+      const panel = screen.getByRole('region', { name })
+      // DOCUMENT_POSITION_FOLLOWING : le panneau vient APRÈS le canvas dans le document.
+      expect(canvas.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING, name).toBeTruthy()
+    }
+    expect(canvas.parentElement).toHaveClass('sticky', 'top-0', 'z-10', 'md:static')
+  })
+
+  it('le canvas annonce ce qui est affiché sans promettre une rotation (elle peut être coupée)', () => {
+    const { container } = render(<App />)
+
+    const canvas = container.querySelector('canvas')!
+    expect(canvas).toHaveAccessibleName(/Objet affiché en 3D : Cube/)
+    expect(canvas).not.toHaveAccessibleName(/tourne/)
+  })
+
+  it('décocher la rotation automatique arrête la rotation de l\'objet', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    env.runFrame(0)
+    env.runFrame(50)
+    const rotating = env.pageFake().lastUniform('uModel')
+    env.runFrame(100)
+    expect(env.pageFake().lastUniform('uModel')).not.toEqual(rotating) // elle tourne au départ
+
+    await user.click(screen.getByRole('checkbox', { name: AUTO_ROTATE }))
+    env.runFrame(150)
+    const stopped = env.pageFake().lastUniform('uModel')
+    env.runFrame(200)
+    env.runFrame(250)
+
+    expect(env.pageFake().lastUniform('uModel')).toEqual(stopped)
+  })
+
+  it('cocher le culling l\'active sur le GPU (faces BACK), le décocher le désactive', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    const fake = env.pageFake()
+    expect(fake.isEnabled(fake.gl.CULL_FACE)).toBe(false)
+
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+    expect(fake.isEnabled(fake.gl.CULL_FACE)).toBe(true)
+    expect(fake.cullFaceMode()).toBe(fake.gl.BACK)
+
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+    expect(fake.isEnabled(fake.gl.CULL_FACE)).toBe(false)
+  })
+
+  it('changer les options de vue ne recrée ni le canvas, ni le contexte, ni le programme, ni le maillage', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const canvas = container.querySelector('canvas')
+    const contextRequests = env.getContext.mock.calls.length
+
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+    await user.click(screen.getByRole('checkbox', { name: AUTO_ROTATE }))
+
+    expect(container.querySelector('canvas')).toBe(canvas)
+    expect(env.getContext.mock.calls.length).toBe(contextRequests)
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledOnce()
+    expect(env.pageFake().mocks.createVertexArray).toHaveBeenCalledOnce()
+  })
+
+  it('« Réinitialiser la caméra » remet la caméra de départ sur le GPU après un déplacement', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const fake = env.pageFake()
+    const canvas = container.querySelector('canvas')!
+    env.runFrame(0)
+    const start = fake.lastUniform('uCameraPosition')
+
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft' })
+    fireEvent.keyDown(canvas, { key: '-' })
+    env.runFrame(16)
+    expect(fake.lastUniform('uCameraPosition')).not.toEqual(start)
+
+    await user.click(screen.getByRole('button', { name: 'Réinitialiser la caméra' }))
+    env.runFrame(32)
+
+    expect(fake.lastUniform('uCameraPosition')).toEqual(start)
+  })
+
+  it('« Réinitialiser la caméra » peut servir plusieurs fois de suite (chaque clic change la clé)', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const fake = env.pageFake()
+    const canvas = container.querySelector('canvas')!
+    env.runFrame(0)
+    const start = fake.lastUniform('uCameraPosition')
+    const reset = screen.getByRole('button', { name: 'Réinitialiser la caméra' })
+
+    for (let i = 0; i < 3; i++) {
+      fireEvent.keyDown(canvas, { key: 'ArrowRight' })
+      await user.click(reset)
+      env.runFrame(16 * (i + 1))
+      expect(fake.lastUniform('uCameraPosition'), `tour ${i + 1}`).toEqual(start)
+    }
+  })
+
+  it('« Réinitialiser la caméra » ne change pas les options de vue', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+
+    await user.click(screen.getByRole('button', { name: 'Réinitialiser la caméra' }))
+
+    expect(screen.getByRole('checkbox', { name: CULLING })).toBeChecked()
+    expect(env.pageFake().isEnabled(env.pageFake().gl.CULL_FACE)).toBe(true)
+  })
+
+  it('changer de forme garde les options de vue choisies', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+
+    await user.click(screen.getByRole('radio', { name: 'Sphère' }))
+
+    expect(screen.getByRole('checkbox', { name: CULLING })).toBeChecked()
+    expect(env.pageFake().isEnabled(env.pageFake().gl.CULL_FACE)).toBe(true)
+  })
+
+  it('après une perte de contexte, les options de vue ET la caméra courantes reviennent', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const canvas = container.querySelector('canvas')!
+    const fake = env.pageFake()
+    await user.click(screen.getByRole('checkbox', { name: CULLING }))
+    fireEvent.keyDown(canvas, { key: 'ArrowLeft' })
+    env.runFrame(0)
+    const cameraBefore = fake.lastUniform('uCameraPosition')
+
+    env.loseAndRestoreContext(canvas, fake)
+
+    expect(fake.isEnabled(fake.gl.CULL_FACE)).toBe(true)
+    expect(fake.lastUniform('uCameraPosition')).toEqual(cameraBefore)
+  })
+})
+
+describe('App : taille de la 3D collée', () => {
+  it('plafonne la hauteur de la 3D sous md (45vh) sans toucher à sa largeur, et retire le plafond à partir de md', () => {
+    const { container } = render(<App />)
+
+    // Test sur la présence des classes : jsdom ne charge pas le CSS Tailwind, il ne peut pas mesurer
+    // la hauteur réelle (paysage téléphone à vérifier dans un vrai navigateur).
+    expect(container.querySelector('canvas')).toHaveClass('aspect-video', 'w-full', 'max-h-[45vh]', 'md:max-h-none')
+  })
+})

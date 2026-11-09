@@ -104,6 +104,14 @@ export function createFakeGl(options: FakeGlOptions = {}) {
   const pendingErrors: number[] = []
   let bufferDataCalls = 0
 
+  /**
+   * Réglages d'état du contexte : fonctions activées par `enable`, et face éliminée par `cullFace`.
+   * Un vrai contexte les garde jusqu'à ce qu'on les change, et un contexte restauré repart des valeurs
+   * par défaut (rien d'activé, BACK) : `loseAllResources` les remet à zéro pour le simuler.
+   */
+  const enabledCapabilities = new Set<number>()
+  let cullFaceMode: number = CONSTANTS.BACK
+
   const mocks = {
     ...CONSTANTS,
     get drawingBufferWidth() {
@@ -175,9 +183,15 @@ export function createFakeGl(options: FakeGlOptions = {}) {
 
     clearColor: vi.fn(),
     clear: vi.fn(),
-    enable: vi.fn(),
-    disable: vi.fn(),
-    cullFace: vi.fn(),
+    enable: vi.fn((capability: number) => {
+      enabledCapabilities.add(capability)
+    }),
+    disable: vi.fn((capability: number) => {
+      enabledCapabilities.delete(capability)
+    }),
+    cullFace: vi.fn((mode: number) => {
+      cullFaceMode = mode
+    }),
     frontFace: vi.fn(),
     viewport: vi.fn(),
     drawElements: vi.fn(),
@@ -199,10 +213,19 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     },
     /** Nombre total de ressources créées depuis le début (supprimées ou non). */
     createdCount: () => created,
-    /** Simule une perte de contexte : le GPU a tout détruit, sans qu'aucun delete* soit appelé. */
+    /**
+     * Simule une perte de contexte : le GPU a tout détruit, sans qu'aucun delete* soit appelé, et le
+     * contexte restauré repart avec les réglages d'état par défaut.
+     */
     loseAllResources() {
       live.clear()
+      enabledCapabilities.clear()
+      cullFaceMode = CONSTANTS.BACK
     },
+    /** Vrai si `enable(capability)` a été appelé (et pas défait par `disable`) depuis la création ou la dernière perte. */
+    isEnabled: (capability: number) => enabledCapabilities.has(capability),
+    /** La face éliminée par le culling (BACK par défaut, comme dans WebGL). */
+    cullFaceMode: () => cullFaceMode,
     /** Historique des valeurs envoyées pour un uniform. */
     uniformHistory: (name: string) => uniformHistory.get(name) ?? [],
     /** Dernière valeur envoyée pour un uniform. */
