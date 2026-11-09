@@ -111,6 +111,22 @@ describe('Viewer3D : changement de maillage', () => {
     expect(fake.liveCounts()).toEqual(ONE_MESH_ALIVE) // l'ancien est toujours là
   })
 
+  it('OUT_OF_MEMORY lu par getError : onMeshError reçoit l\'erreur et l\'ancien maillage reste intact', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.unstubAllGlobals() // le beforeEach a déjà installé un faux sans panne : on le remplace
+    // Le cube fait les appels 1 à 3 à bufferData, la sphère les 4 à 6 : le 5e (normales) manque de mémoire GPU.
+    env = installFakeWebGL({ bufferDataError: { call: 5, code: 1285 } })
+    const onMeshError = vi.fn()
+    const { rerender } = render(<Viewer3D mesh={createShape('cube')} onMeshError={onMeshError} />)
+    const fake = env.pageFake()
+
+    rerender(<Viewer3D mesh={createShape('sphere')} onMeshError={onMeshError} />)
+
+    expect(onMeshError).toHaveBeenCalledOnce()
+    expect(onMeshError.mock.calls[0]![0]).toEqual(expect.objectContaining({ message: expect.stringMatching(/Mémoire graphique/) }))
+    expect(fake.liveCounts()).toEqual(ONE_MESH_ALIVE)
+  })
+
   it('en démontant, libère le dernier maillage (et pas seulement le premier)', () => {
     const { rerender, unmount } = render(<Viewer3D mesh={createShape('cube')} />)
     const fake = env.pageFake()

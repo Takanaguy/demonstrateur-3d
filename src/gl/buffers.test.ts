@@ -105,6 +105,57 @@ describe('createIndexedMesh', () => {
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
   })
 
+  it('un bufferData sans mémoire GPU (OUT_OF_MEMORY lu par getError) lève une erreur claire et libère tout', () => {
+    // Sur un vrai GPU, bufferData ne lève rien : seul getError révèle l'échec. Ici le 3e (indices) échoue.
+    const { gl, mocks, liveCounts } = createFakeGl({ bufferDataError: { call: 3, code: 1285 } })
+
+    expect(() => createIndexedMesh(gl, triangle)).toThrow(/Mémoire graphique insuffisante/)
+
+    expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
+    expect(mocks.deleteVertexArray).toHaveBeenCalledOnce()
+    expect(mocks.deleteBuffer).toHaveBeenCalledTimes(3)
+  })
+
+  it('l\'erreur est lue APRÈS la dernière copie et AVANT de débrancher le VAO', () => {
+    const { gl, mocks } = createFakeGl()
+
+    createIndexedMesh(gl, triangle)
+
+    const lastRead = mocks.getError.mock.invocationCallOrder.at(-1)!
+    const lastCopy = mocks.bufferData.mock.invocationCallOrder.at(-1)!
+    const vaoUnbind = mocks.bindVertexArray.mock.invocationCallOrder[1]!
+    expect(mocks.bindVertexArray.mock.calls[1]).toEqual([null])
+    expect(lastRead).toBeGreaterThan(lastCopy)
+    expect(lastRead).toBeLessThan(vaoUnbind)
+  })
+
+  it('toute autre erreur WebGL est signalée avec son code', () => {
+    const { gl, liveCounts } = createFakeGl({ bufferDataError: { call: 1, code: 1282 } })
+
+    expect(() => createIndexedMesh(gl, triangle)).toThrow(/Erreur WebGL.*1282/)
+
+    expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
+  })
+
+  it('une erreur plus ancienne n\'est pas attribuée à ce maillage (file vidée avant la création)', () => {
+    const { gl, queueError, liveCounts } = createFakeGl()
+    queueError(1282)
+    queueError(1285)
+
+    expect(() => createIndexedMesh(gl, triangle)).not.toThrow()
+
+    expect(liveCounts().buffer).toBe(3)
+  })
+
+  it('le vidage des erreurs a une borne : un contexte qui répond toujours une erreur ne bloque pas', () => {
+    const { gl, mocks } = createFakeGl()
+    mocks.getError.mockReturnValue(1285)
+
+    expect(() => createIndexedMesh(gl, triangle)).toThrow(/Mémoire graphique/)
+
+    expect(mocks.getError.mock.calls.length).toBeLessThan(100)
+  })
+
   it('refuse des données incohérentes avant de toucher au GPU', () => {
     const { gl, mocks } = createFakeGl()
     const bad = (data: IndexedMeshData) => () => createIndexedMesh(gl, data)

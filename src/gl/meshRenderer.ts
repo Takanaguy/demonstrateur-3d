@@ -153,7 +153,8 @@ export function createMeshRenderer(gl: WebGL2RenderingContext, initialMesh: Mesh
     },
 
     setMesh(mesh) {
-      // Le nouveau maillage est créé d'abord : s'il échoue, `current` n'a pas été touché.
+      // Le nouveau maillage est créé d'abord : s'il échoue (fabrique `null` ou erreur lue par
+      // `getError`, comme OUT_OF_MEMORY, voir createIndexedMesh), `current` n'a pas été touché.
       const next = uploadMesh(gl, mesh)
       current.dispose() // libère l'ancien VAO et ses buffers, que le ramasse-miettes ne verrait pas
       current = next

@@ -90,6 +90,8 @@ Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistan
 - Aucune dépendance 3D : le bundle de production passe de 752 kB (200 kB compressés) à 232 kB (74 kB compressés). Ce qui reste est presque entièrement React : notre code WebGL et nos shaders pèsent très peu.
 - Les parties intéressantes à venir (modèles d'éclairage, normales, boîte englobante) s'écrivent directement dans les shaders, sans contourner un moteur.
 
+**Mise à jour (ticket 2, taille mesurée).** Les chiffres 752 kB et 232 kB ci-dessus datent du ticket 1b. Après le ticket 2 (formes, analyseur OBJ, panneau), `npm run build` affiche 244,12 kB pour le JavaScript (78,15 kB compressés en gzip) et 10,58 kB pour le CSS (2,91 kB compressés).
+
 **Mise à jour (ticket 2).** Les shaders s'appellent maintenant `mesh.vert` et `mesh.frag` (ils ne dessinent plus que des cubes), et `cubeRenderer.ts` est devenu `meshRenderer.ts` (décisions 10 à 14).
 
 **Compromis (coûts réels).**
@@ -144,11 +146,13 @@ Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistan
 - Les points qu'aucune face n'utilise sont écartés du maillage. Les sommets sont rangés dans l'ordre où les faces les citent.
 - Nombres : lus strictement (chiffres, signes, point, exposant ; ni `NaN`, ni `Infinity`, ni hexadécimal) puis arrondis à la précision 32 bits ; un nombre trop grand pour un flottant 32 bits est refusé plutôt que transformé en infini.
 - Directives ignorées sans erreur : `o`, `g`, `s`, `usemtl`, `mtllib`, `l` et toute directive inconnue. Un `#` commence un commentaire jusqu'à la fin de la ligne.
+- Sommet de face : `v`, `v/vt`, `v/vt/vn` ou `v//vn`. Un `/` doit être suivi d'un indice : `1/`, `1/2/` et `1//` sont refusés (« Sommet de face mal formé »), de même que `//1` (position absente).
+- La clé de déduplication `position × nbNormales + normale` est un entier exact tant que `maxVertices × nbNormales` reste sous 2^53 : c'est vrai avec les limites par défaut, mais pas garanti si on les relève via `overrides`.
 - Chaque erreur est une `ObjParseError` en français avec le numéro de ligne (`Ligne 12 : ...`), sauf « aucune face » qui concerne tout le fichier.
 
 **Pourquoi découper avec `split` et non des expressions régulières.** Le fichier est une entrée non fiable. Les seules expressions régulières utilisées testent un caractère répété une fois (`[0-9eE+-.]+`, `[+-]?[0-9]+`), sans répétition imbriquée : leur temps reste proportionnel à la longueur du texte. Il n'y a ni récursion ni `eval`.
 
-**Compromis (non gérés).** Textures et matériaux (`.mtl`) ; les lignes continuées par une barre oblique inverse (`\`) ne sont pas recollées ; les fins de ligne « Mac classique » (CR seul) ne sont pas reconnues ; les surfaces courbes et les lignes (`l`, `curv`...) sont ignorées. Un OBJ dont les faces sont en sens horaire (non conforme à l'usage) sera éclairé à l'envers (voir la décision 13).
+**Compromis (non gérés).** Textures et matériaux (`.mtl`) ; les lignes continuées par une barre oblique inverse (`\`) ne sont pas recollées ; les fins de ligne « Mac classique » (CR seul) ne sont pas lues : un fichier sans aucun `\n` mais avec au moins un `\r` est refusé avec un message qui dit quoi faire (sans cela, tout le fichier serait lu comme une seule ligne et l'erreur serait incompréhensible) ; les surfaces courbes et les lignes (`l`, `curv`...) sont ignorées. Un OBJ dont les faces sont en sens horaire (non conforme à l'usage) sera éclairé à l'envers (voir la décision 13).
 
 ### 12. Limites de sécurité sur le fichier
 
@@ -189,11 +193,11 @@ Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistan
 
 ### 15. Remplacer le maillage affiché sans recréer le contexte
 
-**Décision.** `Viewer3D` reçoit le maillage en prop. Un second `useEffect` appelle `renderer.setMesh` quand la prop change : le canvas, le contexte WebGL, le programme et la boucle d'animation restent les mêmes. `setMesh` crée le nouveau VAO et ses buffers AVANT de supprimer les anciens : si la création échoue (mémoire GPU), l'erreur remonte et l'ancien maillage reste affiché et intact. Le composant retient le maillage affiché dans une référence, pour que le renderer recréé après une perte de contexte redessine le DERNIER maillage choisi (y compris un maillage choisi pendant la perte). L'état « quelle forme ou quel fichier » vit dans un hook (`ui/useMeshSelection.ts`) : un fichier refusé laisse la sélection précédente en place, et si le GPU refuse un maillage, la sélection revient à la précédente pour que le panneau reste cohérent avec l'écran.
+**Décision.** `Viewer3D` reçoit le maillage en prop. Un second `useEffect` appelle `renderer.setMesh` quand la prop change : le canvas, le contexte WebGL, le programme et la boucle d'animation restent les mêmes. `setMesh` crée le nouveau VAO et ses buffers AVANT de supprimer les anciens : si la création échoue, l'erreur remonte et l'ancien maillage reste affiché et intact. Deux façons d'échouer sont détectées dans `createIndexedMesh` (`gl/buffers.ts`) : (1) `createBuffer` ou `createVertexArray` renvoie `null` (contexte perdu) ; (2) un manque de mémoire GPU. Ce second cas est piégeux : en WebGL, `gl.bufferData` qui échoue ne lève AUCUNE exception, il pose seulement un drapeau d'erreur que seul `gl.getError()` révèle (code `OUT_OF_MEMORY`). Le mécanisme : avant de créer quoi que ce soit, on vide les erreurs en attente en lisant `getError` jusqu'à `NO_ERROR` (avec une borne de 32 lectures, pour ne pas boucler sans fin sur un contexte défaillant), afin de ne pas reprocher à ce maillage une erreur plus ancienne ; puis, après les trois `bufferData` (positions, normales, indices) et AVANT de débrancher le VAO, on lit `getError` une fois. Si le code n'est pas `NO_ERROR`, on lève une erreur en français (« Mémoire graphique insuffisante pour ce modèle » pour `OUT_OF_MEMORY`, sinon « Erreur WebGL ... (code N) »). Le `catch` existant supprime alors le VAO et les buffers déjà créés, et l'erreur remonte par `setMesh` jusqu'à `onMeshError`. Le composant retient le maillage affiché dans une référence, pour que le renderer recréé après une perte de contexte redessine le DERNIER maillage choisi (y compris un maillage choisi pendant la perte). L'état « quelle forme ou quel fichier » vit dans un hook (`ui/useMeshSelection.ts`) : un fichier refusé laisse la sélection précédente en place, et si le GPU refuse un maillage, la sélection revient à la précédente pour que le panneau reste cohérent avec l'écran.
 
 **Pourquoi.** Recréer le contexte à chaque changement de forme gaspillerait l'un des contextes WebGL limités par navigateur et ferait clignoter l'écran. Le chargement d'un fichier est asynchrone : un numéro de requête ignore le résultat d'une lecture devenue périmée (l'utilisateur a changé d'avis entre-temps).
 
-**Compromis.** Pendant un court instant, ancien et nouveau maillage existent ensemble sur le GPU (le temps de la création). C'est le prix de la garantie « l'ancien reste si le nouveau échoue ».
+**Compromis.** Pendant un court instant, ancien et nouveau maillage existent ensemble sur le GPU (le temps de la création). C'est le prix de la garantie « l'ancien reste si le nouveau échoue ». Le contrôle par `getError` n'est vérifié qu'avec un faux contexte qui simule `OUT_OF_MEMORY` : un vrai manque de mémoire GPU n'a pas été provoqué. Certains pilotes peuvent aussi différer l'allocation et ne signaler l'échec qu'au dessin ; ce cas n'est pas couvert.
 
 ## Limites connues
 

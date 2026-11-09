@@ -46,7 +46,7 @@ describe('App : panneau de choix', () => {
     expect(screen.getByText('Triangles : 12')).toBeInTheDocument()
     expect(fileInput()).toHaveAttribute('accept', '.obj')
     expect(screen.queryByRole('alert')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Revenir au cube' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Revenir au cube' })).toHaveAttribute('aria-disabled', 'true')
     expectGpuShows('cube')
   })
 
@@ -116,7 +116,7 @@ describe('App : chargement d\'un fichier .obj', () => {
     expect(Math.min(...sent.positions)).toBeCloseTo(-1, 5)
     expect(screen.queryByRole('alert')).toBeNull()
     for (const radio of screen.getAllByRole('radio')) expect(radio).not.toBeChecked()
-    expect(screen.getByRole('button', { name: 'Revenir au cube' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Revenir au cube' })).not.toHaveAttribute('aria-disabled')
   })
 
   it('un fichier invalide affiche une alerte avec le numéro de ligne et GARDE le maillage précédent', async () => {
@@ -183,6 +183,37 @@ describe('App : chargement d\'un fichier .obj', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('l\'ancienne alerte disparaît dès le début de la lecture d\'un nouveau fichier', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.upload(fileInput(), objFile('f 1 2 3', 'mauvais.obj'))
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    let finishReading: (text: string) => void = () => {}
+    const slow = objFile(TETRAHEDRON, 'lent.obj')
+    vi.spyOn(slow, 'text').mockReturnValue(new Promise<string>((resolve) => (finishReading = resolve)))
+
+    await user.upload(fileInput(), slow)
+
+    // La lecture n'est pas terminée, mais l'alerte du fichier précédent n'est plus affichée.
+    expect(screen.queryByRole('alert')).toBeNull()
+    await act(async () => finishReading(TETRAHEDRON))
+    expect(await screen.findByText('fichier lent.obj')).toBeInTheDocument()
+  })
+
+  it('un fichier trop gros remplace l\'ancienne alerte par la nouvelle', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.upload(fileInput(), objFile('f 1 2 3', 'mauvais.obj'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ligne 1')
+    const big = objFile('v 0 0 0', 'gros.obj')
+    Object.defineProperty(big, 'size', { value: MAX_OBJ_TEXT_LENGTH + 1 })
+
+    await user.upload(fileInput(), big)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/gros\.obj/)
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+  })
+
   it('le bouton « Revenir au cube » ramène le cube après un fichier', async () => {
     const user = userEvent.setup()
     render(<App />)
@@ -194,7 +225,27 @@ describe('App : chargement d\'un fichier .obj', () => {
     expect(screen.getByRole('radio', { name: 'Cube' })).toBeChecked()
     expect(screen.getByText('Sommets : 24')).toBeInTheDocument()
     expectGpuShows('cube')
-    expect(screen.getByRole('button', { name: 'Revenir au cube' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Revenir au cube' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('« Revenir au cube » garde le focus clavier après activation, et un clic sur le cube déjà affiché ne fait rien', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.upload(fileInput(), objFile(TETRAHEDRON))
+    await screen.findByText('Sommets : 4')
+    const button = screen.getByRole('button', { name: 'Revenir au cube' })
+    button.focus()
+
+    await user.keyboard('{Enter}')
+
+    expect(screen.getByRole('radio', { name: 'Cube' })).toBeChecked()
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveFocus() // avec `disabled`, le focus serait perdu ici
+    const vaoCreated = env.pageFake().mocks.createVertexArray.mock.calls.length
+    await user.keyboard('{Enter}')
+    await user.click(button)
+    expect(env.pageFake().mocks.createVertexArray.mock.calls.length).toBe(vaoCreated) // rien renvoyé au GPU
+    expect(button).toHaveFocus()
   })
 
   it('on peut recharger le même fichier : le champ est vidé après chaque choix', async () => {

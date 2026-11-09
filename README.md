@@ -29,7 +29,8 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 - Un fichier refusé affiche un message d'erreur et laisse l'objet précédent à l'écran.
 - Les indices 32 bits sont gérés (maillages de plus de 65 535 sommets).
 - Le face culling est désactivé et la normale est retournée pour les faces vues par l'arrière : plans et fichiers ouverts sont visibles et éclairés des deux côtés.
-- 346 tests (Vitest). Bundle de production : 244 kB (78 kB compressés).
+- 363 tests (Vitest) répartis dans 17 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 244,12 kB (78,15 kB compressés en gzip), CSS 10,58 kB (2,91 kB compressés).
+- Un maillage que le GPU refuse faute de mémoire (erreur `OUT_OF_MEMORY` lue avec `getError`, car `bufferData` ne lève rien) est signalé, et l'objet précédent reste affiché.
 
 **Pas encore fait**
 - Modèles d'éclairage (Blinn-Phong, gaussien).
@@ -96,7 +97,7 @@ Règle de dépendance : `core/` n'importe ni React ni WebGL. `gl/` peut importer
 
 Un fichier OBJ est du texte, une instruction par ligne : `v x y z` (un point), `vn` (une normale), `f 1 2 3` (une face qui relie des points déjà cités).
 
-1. **Lecture ligne par ligne**, en gardant le numéro de ligne pour les messages d'erreur. Les commentaires (`#`), lignes vides, fins de ligne Windows (CRLF) et directives inconnues sont ignorés.
+1. **Lecture ligne par ligne**, en gardant le numéro de ligne pour les messages d'erreur. Les commentaires (`#`), lignes vides, fins de ligne Windows (CRLF) et directives inconnues sont ignorés. Les fins de ligne « Mac classique » (retour chariot seul) sont refusées avec un message clair.
 2. **Indices.** Dans une face, les indices commencent à **1** (pas à 0), et un indice **négatif** compte depuis la fin (`-1` = le dernier point lu jusque-là). 0 ou un indice qui sort des bornes est une erreur avec son numéro de ligne.
 3. **Triangulation en éventail.** Une face à 4 sommets ou plus est coupée en triangles autour de son premier sommet : `(0,1,2)`, `(0,2,3)`, `(0,3,4)`... Cela suppose un polygone convexe.
 4. **Déduplication.** Un sommet GPU est une paire (position, normale). Une `Map` garde la liste des paires déjà vues : un point cité par dix triangles n'est envoyé qu'une fois.

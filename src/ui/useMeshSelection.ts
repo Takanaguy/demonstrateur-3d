@@ -78,6 +78,10 @@ export function useMeshSelection() {
       return
     }
 
+    // L'ancienne alerte ne doit pas rester affichée pendant la lecture du nouveau fichier : elle
+    // parlerait d'un autre fichier. (Taille refusée : la nouvelle alerte remplace déjà l'ancienne.)
+    setError(null)
+
     try {
       const mesh = parseObj(await file.text())
       if (request !== requestRef.current) return // un choix plus récent a pris la place

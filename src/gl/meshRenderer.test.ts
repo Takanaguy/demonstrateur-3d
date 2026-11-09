@@ -339,6 +339,23 @@ describe('createMeshRenderer : setMesh', () => {
     expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
   })
 
+  it('si le GPU manque de mémoire (OUT_OF_MEMORY via getError) : l\'erreur remonte, l\'ancien est intact, rien ne fuit', () => {
+    // Le cube initial fait les appels 1 à 3 à bufferData ; la sphère fait 4 (positions), 5 (normales), 6 (indices).
+    const { gl, mocks, liveCounts } = createFakeGl({ bufferDataError: { call: 5, code: 1285 } })
+    const renderer = createMeshRenderer(gl, cube)
+    const oldVao = mocks.createVertexArray.mock.results[0]!.value
+
+    expect(() => renderer.setMesh(createSphere(8, 4))).toThrow(/Mémoire graphique insuffisante/)
+
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+    expect(mocks.deleteVertexArray).toHaveBeenCalledTimes(1)
+    expect(mocks.deleteVertexArray).not.toHaveBeenCalledWith(oldVao)
+    mocks.bindVertexArray.mockClear()
+    renderer.draw(0)
+    expect(mocks.bindVertexArray).toHaveBeenNthCalledWith(1, oldVao)
+    expect(mocks.drawElements).toHaveBeenLastCalledWith(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0)
+  })
+
   it('un maillage vide est refusé et l\'ancien reste affiché', () => {
     const { gl, mocks, liveCounts } = createFakeGl()
     const renderer = createMeshRenderer(gl, cube)

@@ -15,7 +15,7 @@ interface MeshPanelProps {
 const numberFormat = new Intl.NumberFormat('fr-FR')
 
 const BUTTON_CLASSES =
-  'rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
+  'rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-white'
 
 /**
  * Le panneau de choix du maillage : forme de base, fichier OBJ, statistiques, erreur. Ne contient
@@ -71,7 +71,17 @@ export function MeshPanel({ mesh, source, error, onSelectShape, onLoadFile }: Me
           <li>Sommets : {numberFormat.format(vertexCount(mesh))}</li>
           <li>Triangles : {numberFormat.format(triangleCount(mesh))}</li>
         </ul>
-        <button type="button" className={BUTTON_CLASSES} disabled={showingCube} onClick={() => onSelectShape('cube')}>
+        {/* `aria-disabled` et non `disabled` : un bouton `disabled` perd le focus clavier à l'instant
+            où il se désactive (juste après son propre clic), et l'utilisateur au clavier est renvoyé
+            au début de la page. Ici il garde le focus ; le clic est ignoré dans le gestionnaire. */}
+        <button
+          type="button"
+          className={BUTTON_CLASSES}
+          aria-disabled={showingCube || undefined}
+          onClick={() => {
+            if (!showingCube) onSelectShape('cube')
+          }}
+        >
           Revenir au cube
         </button>
       </div>

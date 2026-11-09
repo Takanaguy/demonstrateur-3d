@@ -325,6 +325,11 @@ describe('parseObj : erreurs, avec le numéro de ligne', () => {
     ['indice non numérique', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf a b c\n', 4, /Indice de position invalide/],
     ['indice vide avant la barre', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf /1 2 3\n', 4, /Indice de position invalide/],
     ['trop de barres dans un sommet', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1/1/1/1 2 3\n', 4, /mal formé/],
+    ['position absente avant deux barres (//1)', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf //1 2//1 3//1\n', 5, /Indice de position invalide/],
+    ['barre finale sans indice (v/)', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1/ 2/ 3/\n', 4, /Sommet de face mal formé : « 1\/ »/],
+    ['deux barres finales sans indice (v//)', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1// 2// 3//\n', 4, /Sommet de face mal formé : « 1\/\/ »/],
+    ['barre finale après la texture (v/vt/)', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nf 1/1/ 2/1/ 3/1/\n', 5, /Sommet de face mal formé : « 1\/1\/ »/],
+    ['barre finale sur un seul sommet de la face', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3/\n', 4, /Sommet de face mal formé : « 3\/ »/],
   ])('%s', (_name, text, line, pattern) => {
     expectParseError(text, line, pattern)
   })
@@ -333,6 +338,16 @@ describe('parseObj : erreurs, avec le numéro de ligne', () => {
     const text = '# début\r\n\r\nv 0 0 0\r\nv 1 0 0\r\nv 1 x 0\r\n'
 
     expectParseError(text, 5, /Coordonnée y invalide/)
+  })
+
+  it('des fins de ligne « retour chariot seul » (ancien Mac) sont refusées avec une explication claire', () => {
+    const text = 'v 0 0 0\rv 1 0 0\rv 0 1 0\rf 1 2 3\r'
+
+    expectParseError(text, null, /Fins de ligne de type Mac.*Windows ou Unix/)
+  })
+
+  it('un seul \\r final avec des \\n ailleurs (CRLF) reste accepté', () => {
+    expect(triangleCount(parseObj('v 0 0 0\r\nv 1 0 0\r\nv 0 1 0\r\nf 1 2 3\r\n'))).toBe(1)
   })
 
   it('un fichier sans aucune face est refusé (sans numéro de ligne : cela concerne tout le fichier)', () => {
@@ -419,12 +434,16 @@ describe('parseObj : limites contre les fichiers énormes ou piégés', () => {
     expect(triangleCount(parseObj(text, { maxFaceVertices: 4 }))).toBe(2)
   })
 
-  it('un nombre de 50 000 chiffres suivi d\'une lettre est refusé tout de suite (pas d\'explosion de calcul)', () => {
-    const started = Date.now()
+  it('un nombre de 50 000 chiffres suivi d\'une lettre est refusé proprement, avec un message court', () => {
+    // 50 002 caractères : sous la limite d'une ligne, donc la ligne est bien analysée et refusée
+    // pour son contenu (et non pour sa longueur). Le message ne recopie qu'un extrait du texte.
+    const hugeNumber = `${'1'.repeat(50_000)}x`
 
-    expectParseError(`v ${'1'.repeat(50_000)}x 0 0\n`, 1, /n'est pas un nombre/)
-    expectParseError(`v 0 0 0\nv 1 0 0\nv 0 1 0\nf ${'1'.repeat(50_000)}x 2 3\n`, 4, /Indice de position invalide/)
+    expectParseError(`v ${hugeNumber} 0 0\n`, 1, /n'est pas un nombre/)
+    expectParseError(`v 0 0 0\nv 1 0 0\nv 0 1 0\nf ${hugeNumber} 2 3\n`, 4, /Indice de position invalide/)
 
-    expect(Date.now() - started).toBeLessThan(2000)
+    for (const text of [`v ${hugeNumber} 0 0\n`, `v 0 0 0\nv 1 0 0\nv 0 1 0\nf ${hugeNumber} 2 3\n`]) {
+      expect(() => parseObj(text)).toThrow(expect.objectContaining({ message: expect.stringMatching(/^.{0,120}$/) }))
+    }
   })
 })

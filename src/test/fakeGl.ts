@@ -34,6 +34,11 @@ export interface FakeGlOptions {
   failLink?: boolean
   /** Fait renvoyer `null` à la fabrique de cette ressource (comme un contexte perdu). */
   failCreate?: ResourceKind
+  /**
+   * Simule un `bufferData` qui échoue : comme sur un vrai GPU, rien n'est levé, l'erreur est seulement
+   * posée dans la file lue par `getError`. `call` est le rang (à partir de 1) de l'appel à `bufferData`.
+   */
+  bufferDataError?: { call: number; code: number }
 }
 
 export const SHADER_LOG = "0:7: 'foo' : undeclared identifier"
@@ -54,6 +59,9 @@ const CONSTANTS = {
   TRIANGLES: 4,
   DEPTH_TEST: 2929,
   CULL_FACE: 2884,
+  NO_ERROR: 0,
+  INVALID_OPERATION: 1282,
+  OUT_OF_MEMORY: 1285,
   BACK: 1029,
   CCW: 2305,
   COLOR_BUFFER_BIT: 16384,
@@ -92,6 +100,10 @@ export function createFakeGl(options: FakeGlOptions = {}) {
   const boundBuffers = new Map<number, FakeResource | null>()
   const attributeBindings: AttributeBinding[] = []
 
+  /** Erreurs en attente, lues une par une par `getError` (puis effacées), comme dans WebGL. */
+  const pendingErrors: number[] = []
+  let bufferDataCalls = 0
+
   const mocks = {
     ...CONSTANTS,
     get drawingBufferWidth() {
@@ -128,7 +140,9 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     bufferData: vi.fn((target: number, data: ArrayLike<number>) => {
       const bound = boundBuffers.get(target)
       if (bound) bound.data = Array.from(data)
+      if (options.bufferDataError?.call === ++bufferDataCalls) pendingErrors.push(options.bufferDataError.code)
     }),
+    getError: vi.fn(() => pendingErrors.shift() ?? CONSTANTS.NO_ERROR),
     deleteBuffer: vi.fn(remove),
 
     createVertexArray: vi.fn(() => make('vertexArray')),
@@ -192,6 +206,10 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     lastUniform: (name: string) => uniformHistory.get(name)?.at(-1)?.values,
     /** Pour chaque `vertexAttribPointer`, l'entrée du shader branchée et les données du buffer qui l'alimente. */
     attributeBindings: () => [...attributeBindings],
+    /** Ajoute une erreur WebGL en attente (par exemple une erreur ancienne, avant la création d'un maillage). */
+    queueError(code: number) {
+      pendingErrors.push(code)
+    },
     /** Change la taille du tampon de dessin (le vrai canvas la fixe via canvas.width). */
     setSize(width: number, height: number) {
       size.width = width

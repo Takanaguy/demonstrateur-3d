@@ -8,9 +8,10 @@
  */
 
 import { act } from '@testing-library/react'
-import { createFakeGl, type FakeGl } from './fakeGl'
+import { createFakeGl, type FakeGl, type FakeGlOptions } from './fakeGl'
 
-export function installFakeWebGL() {
+/** `fakeOptions` règle les pannes simulées des faux contextes (voir `FakeGlOptions`). */
+export function installFakeWebGL(fakeOptions: Omit<FakeGlOptions, 'size'> = {}) {
   /** Un faux contexte par canvas, comme le navigateur (même canvas = même contexte). */
   const fakes = new WeakMap<HTMLCanvasElement, FakeGl>()
   /** Les faux contextes des canvas de la page (le canvas jetable de la détection n'y est pas). */
@@ -23,7 +24,7 @@ export function installFakeWebGL() {
     if (type !== 'webgl2') return null
     let fake = fakes.get(this)
     if (!fake) {
-      fake = createFakeGl({ size: this })
+      fake = createFakeGl({ ...fakeOptions, size: this })
       fakes.set(this, fake)
       if (this.isConnected) pageFakes.push(fake)
     }

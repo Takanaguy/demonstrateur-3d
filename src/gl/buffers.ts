@@ -58,10 +58,15 @@ export function createVertexArray(gl: WebGL2RenderingContext): WebGLVertexArrayO
 
 /**
  * Construit un VAO prêt à dessiner : un buffer par attribut, plus un buffer d'indices.
- * Si une étape échoue, tout ce qui a été créé jusque-là est supprimé avant de relancer l'erreur.
+ * Si une étape échoue (fabrique qui renvoie `null`, ou erreur WebGL lue avec `getError` comme le
+ * manque de mémoire GPU), tout ce qui a été créé jusque-là est supprimé avant de relancer l'erreur.
  */
 export function createIndexedMesh(gl: WebGL2RenderingContext, mesh: IndexedMeshData): IndexedMesh {
   validate(mesh)
+
+  // `getError` rend UNE erreur à la fois puis la remet à zéro. On vide donc d'abord celles qui
+  // traînent (d'un dessin ou d'un autre maillage), pour ne pas accuser ce maillage-ci à tort.
+  drainGlErrors(gl)
 
   const vao = createVertexArray(gl)
   const buffers: WebGLBuffer[] = []
@@ -84,6 +89,11 @@ export function createIndexedMesh(gl: WebGL2RenderingContext, mesh: IndexedMeshD
 
     // Le buffer d'indices doit être créé pendant que le VAO est actif : c'est le VAO qui le retient.
     buffers.push(createBuffer(gl, gl.ELEMENT_ARRAY_BUFFER, mesh.indices))
+
+    // Lu AVANT de débrancher le VAO et APRÈS toutes les copies : un `bufferData` qui manque de
+    // mémoire GPU ne lève aucune exception, il pose seulement un drapeau d'erreur. Lever ici
+    // déclenche le `catch` (qui libère ce maillage à moitié créé) et laisse l'appelant garder l'ancien.
+    throwIfGlError(gl)
 
     // On débranche le VAO avant tout autre réglage, pour ne pas modifier le sien par erreur.
     gl.bindVertexArray(null)
@@ -108,6 +118,26 @@ export function createIndexedMesh(gl: WebGL2RenderingContext, mesh: IndexedMeshD
     },
     dispose,
   }
+}
+
+/** Nombre maximal de lectures de `getError` en une fois : évite une boucle sans fin si un contexte défaillant répond toujours une erreur. */
+const MAX_ERROR_READS = 32
+
+/** Lit et efface les erreurs WebGL en attente. */
+function drainGlErrors(gl: WebGL2RenderingContext): void {
+  for (let i = 0; i < MAX_ERROR_READS && gl.getError() !== gl.NO_ERROR; i++) {
+    // Rien à faire : lire suffit à effacer le drapeau.
+  }
+}
+
+/** Lève une erreur claire si WebGL a signalé un échec depuis le dernier vidage. */
+function throwIfGlError(gl: WebGL2RenderingContext): void {
+  const code = gl.getError()
+  if (code === gl.NO_ERROR) return
+  if (code === gl.OUT_OF_MEMORY) {
+    throw new Error('Mémoire graphique insuffisante pour ce modèle (WebGL : OUT_OF_MEMORY).')
+  }
+  throw new Error(`Erreur WebGL pendant l'envoi du modèle au GPU (code ${code}).`)
 }
 
 /**

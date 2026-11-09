@@ -153,6 +153,14 @@ export function parseObj(text: string, overrides: Partial<ObjLimits> = {}): Mesh
       `Le fichier est trop gros : ${text.length} caractères (maximum : ${limits.maxTextLength}).`,
     )
   }
+  // Le découpage se fait sur `\n` : avec des fins de ligne « retour chariot » seul (anciens Mac),
+  // tout le fichier serait lu comme UNE ligne et l'erreur serait incompréhensible (« Coordonnée z
+  // invalide : 0\rv »). Mieux vaut dire la vraie cause.
+  if (!text.includes('\n') && text.includes('\r')) {
+    throw new ObjParseError(
+      'Fins de ligne de type Mac (retour chariot seul) non prises en charge : enregistrez le fichier avec des fins de ligne Windows ou Unix.',
+    )
+  }
 
   const positions: number[] = [] // x, y, z à la suite, pour chaque ligne `v`
   const fileNormals: number[] = [] // idem pour `vn`, déjà normalisées
@@ -244,7 +252,11 @@ export function parseObj(text: string, overrides: Partial<ObjLimits> = {}): Mesh
     const faceNormals: number[] = []
     for (let i = 1; i <= cornerCount; i++) {
       const parts = tokens[i]!.split('/')
-      if (parts.length > 3) {
+      // Un `/` n'a de sens que s'il est suivi d'un indice : `1/`, `1/2/` et `1//` sont des fautes
+      // de frappe, pas des formes valides. Seule la texture peut être sautée (`v//vn`), et seulement
+      // quand une normale suit. Les accepter en silence ferait croire à un fichier correct.
+      const lastPart = parts[parts.length - 1]!
+      if (parts.length > 3 || (parts.length > 1 && lastPart === '')) {
         throw new ObjParseError(`Sommet de face mal formé : « ${excerpt(tokens[i]!)} ».`, line)
       }
       facePositions.push(parseIndex(parts[0]!, positions.length / 3, 'position', line))
@@ -291,7 +303,9 @@ export function parseObj(text: string, overrides: Partial<ObjLimits> = {}): Mesh
   // --- Étapes 4 et 5 : sommets uniques, indices, normales.
   const useFileNormals = cornerNormals.every((normal) => normal >= 0)
   // Clé d'un sommet = (position, normale) réunis en un seul nombre. Sans normales de fichier, la
-  // position suffit. Le produit reste un entier exact (< 2^53) avec les limites par défaut.
+  // position suffit. L'entier reste exact tant que `maxVertices × nbNormales` < 2^53 : c'est le cas
+  // avec les limites par défaut (1 000 000 x 1 000 000 = 10^12), mais ce n'est pas garanti si on
+  // relève les limites via `overrides` (au-delà, deux sommets différents pourraient avoir la même clé).
   const normalStride = useFileNormals ? fileNormals.length / 3 : 1
   const vertexIds = new Map<number, number>()
   const vertexPositionSource: number[] = [] // pour chaque sommet créé, d'où vient sa position
