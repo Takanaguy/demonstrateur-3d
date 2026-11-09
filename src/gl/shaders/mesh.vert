@@ -14,15 +14,23 @@ uniform mat4 uView;         // monde -> caméra
 uniform mat4 uProjection;   // caméra -> écran (perspective)
 uniform mat3 uNormalMatrix; // inverse transposée de uModel (3x3), pour les normales
 
-// Sortie envoyée au fragment shader. Le GPU l'interpole entre les sommets du triangle.
-out vec3 vNormal;
+// Sorties envoyées au fragment shader. Le GPU les interpole entre les sommets du triangle.
+out vec3 vNormal;        // normale dans le repère du monde
+out vec3 vWorldPosition; // position du sommet dans le repère du monde
 
 void main() {
   // La normale passe dans le repère du monde, là où la lumière est définie. On n'utilise pas
   // uModel pour elle : une mise à l'échelle non uniforme la rendrait oblique à la surface.
   vNormal = uNormalMatrix * aNormal;
 
-  // Position finale. Les matrices s'appliquent de droite à gauche : modèle, puis vue, puis projection.
-  // Le 1.0 (coordonnée w) dit que c'est un point : la translation du modèle doit s'appliquer.
-  gl_Position = uProjection * uView * uModel * vec4(aPosition, 1.0);
+  // Position dans le monde (après la rotation de l'objet, avant la caméra). La lumière étant
+  // ponctuelle, le fragment shader en a besoin pour calculer, pour CHAQUE pixel, la direction vers la
+  // lumière et vers l'oeil. Le 1.0 (coordonnée w) dit que c'est un point : la translation du modèle
+  // doit s'appliquer.
+  vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+  vWorldPosition = worldPosition.xyz;
+
+  // Position finale. Les matrices s'appliquent de droite à gauche : modèle (déjà fait ci-dessus),
+  // puis vue, puis projection.
+  gl_Position = uProjection * uView * worldPosition;
 }

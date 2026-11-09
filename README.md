@@ -16,7 +16,7 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 
 **Fait (ticket 1b, WebGL2 pur à la place de Three.js)**
 - Three.js est retiré. Le cube est dessiné avec du WebGL2 écrit à la main : maths des matrices en TypeScript (`core/mat4.ts`), shaders GLSL (`gl/shaders/`), buffers et VAO (`gl/`).
-- Éclairage : une lumière directionnelle (modèle de Lambert) plus une part ambiante, calculés dans le fragment shader.
+- Éclairage de départ : une lumière directionnelle (modèle de Lambert) plus une part ambiante, calculés dans le fragment shader (remplacé au ticket 3 par une lumière ponctuelle réglable).
 - Les ressources GPU (programme, buffers, VAO) sont créées et supprimées proprement, y compris avec le double montage de StrictMode.
 - Si le navigateur perd le contexte WebGL puis le rend (veille, pilote), le dessin est recréé et reprend tout seul.
 - Si les shaders sont refusés, le message de repli s'affiche et le journal du compilateur va dans la console.
@@ -32,8 +32,15 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 - 363 tests (Vitest) répartis dans 17 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 244,12 kB (78,15 kB compressés en gzip), CSS 10,58 kB (2,91 kB compressés).
 - Un maillage que le GPU refuse faute de mémoire (erreur `OUT_OF_MEMORY` lue avec `getError`, car `bufferData` ne lève rien) est signalé, et l'objet précédent reste affiché.
 
+**Fait (ticket 3, modèles d'éclairage et lumière réglable)**
+- Trois modèles au choix, dans un seul fragment shader : Lambert (diffus seul, sans reflet), Blinn-Phong et Gaussien (qui ajoutent un reflet au diffus). Le modèle est choisi par un uniform entier, sans recompiler le programme.
+- La lumière est maintenant ponctuelle : sa position se règle dans le monde (x, y, z), la direction vers la lumière est calculée pour chaque pixel. La caméra est envoyée au shader pour calculer la direction vers l'oeil.
+- Un panneau d'éclairage sous (ou à côté de) celui du maillage : modèle, position, couleur de la lumière, lumière ambiante, intensité du reflet, brillance (Blinn-Phong), moyenne et écart type (Gaussien), bouton « Réinitialiser l'éclairage ». Les réglages inutiles pour le modèle choisi sont masqués.
+- Les réglages (`core/lighting.ts`) sont bornés avant d'aller au GPU : jamais de NaN dans un uniform. Les deux formules de reflet existent aussi en TypeScript, comme référence testable (les shaders ne sont pas exécutés par les tests).
+- Un changement d'éclairage ne recrée ni le canvas, ni le contexte, ni le maillage ; après une perte de contexte, les derniers réglages reviennent.
+- 473 tests (Vitest) répartis dans 20 fichiers de test. Bundle de production (sortie de `npm run build`) : JavaScript 252,94 kB (80,73 kB compressés en gzip), CSS 11,71 kB (3,16 kB compressés).
+
 **Pas encore fait**
-- Modèles d'éclairage (Blinn-Phong, gaussien).
 - Affichage en fil de fer, des normales, de la boîte englobante (la boîte est calculée, pas encore dessinée).
 - Rotation et zoom à la souris.
 - Textures (les coordonnées `vt` d'un fichier OBJ sont lues puis ignorées) et matériaux (`.mtl`).
@@ -69,17 +76,20 @@ src/
   core/      Logique pure, sans React ni WebGL : matrices (mat4.ts), vecteurs (vec3.ts),
              maillage commun, boîte englobante, normalisation, normales lisses (mesh.ts),
              cube (cube.ts), plan, sphère, cône (shapes.ts), analyseur OBJ (obj.ts),
-             couleurs (color.ts), rotation, détection de WebGL.
+             couleurs (color.ts), réglages et formules d'éclairage (lighting.ts), rotation,
+             détection de WebGL.
   gl/        Tout ce qui parle à WebGL, sans React : compilation des shaders (shader.ts),
              buffers et VAO (buffers.ts), dessin d'un maillage (meshRenderer.ts).
     shaders/   Les shaders en GLSL ES 3.00 : mesh.vert (sommets) et mesh.frag (fragments).
-  ui/        Le panneau de choix (MeshPanel.tsx) et l'état « quel maillage afficher »
-             avec le chargement des fichiers (useMeshSelection.ts).
+  ui/        Le panneau de choix du maillage (MeshPanel.tsx), l'état « quel maillage afficher »
+             avec le chargement des fichiers (useMeshSelection.ts) et le panneau d'éclairage
+             (LightingPanel.tsx).
   viewer/    Ce qui touche à React pour la 3D : le composant Viewer3D (canvas, boucle
-             d'animation, redimensionnement, changement de maillage, perte de contexte, nettoyage).
+             d'animation, redimensionnement, changement de maillage et d'éclairage, perte de contexte,
+             nettoyage).
   test/      Réglage des tests (setup.ts), faux contexte WebGL (fakeGl.ts) et son installation
              dans jsdom (installFakeWebGL.ts).
-  App.tsx    Page d'accueil : un titre, le panneau de choix et le Viewer3D.
+  App.tsx    Page d'accueil : un titre, les deux panneaux (maillage, éclairage) et le Viewer3D.
 docs/
   DECISIONS.md   Choix techniques, raisons, limites connues.
 ```
@@ -88,10 +98,23 @@ Règle de dépendance : `core/` n'importe ni React ni WebGL. `gl/` peut importer
 
 ## Comment un objet arrive à l'écran (le pipeline WebGL)
 
-1. **Shaders.** Deux petits programmes écrits en GLSL tournent sur le GPU : le *vertex shader* (`mesh.vert`) place chaque sommet à l'écran, le *fragment shader* (`mesh.frag`) choisit la couleur de chaque pixel (éclairage). `gl/shader.ts` les compile et les lie en un *programme*, et lit le journal du compilateur si cela échoue.
+1. **Shaders.** Deux petits programmes écrits en GLSL tournent sur le GPU : le *vertex shader* (`mesh.vert`) place chaque sommet à l'écran, le *fragment shader* (`mesh.frag`) choisit la couleur de chaque pixel (éclairage : Lambert, Blinn-Phong ou gaussien, voir plus bas). `gl/shader.ts` les compile et les lie en un *programme*, et lit le journal du compilateur si cela échoue.
 2. **Buffers et VAO.** Les sommets du maillage (positions, normales) et ses indices (3 par triangle ; 16 bits, ou 32 bits au-delà de 65 535 sommets) sont copiés dans des *buffers*, des blocs de mémoire du GPU. Un *VAO* retient quel buffer alimente quelle entrée du shader : on le configure une fois, puis un seul appel le rebranche à chaque image.
 3. **Matrices.** Trois matrices 4x4 transforment les points : *modèle* (la rotation du cube), *vue* (la position de la caméra), *projection* (la perspective, qui rapetisse ce qui est loin). La *matrice normale* (3x3, inverse transposée du modèle) fait tourner les normales sans les fausser, pour que l'éclairage reste juste. Avant l'envoi, le maillage est recentré et mis à l'échelle (cube de côté 2) : la caméra, elle, ne bouge pas. Elles sont calculées en TypeScript (`core/mat4.ts`) puis envoyées au shader sous forme d'*uniforms*, des valeurs communes à tous les sommets d'un même dessin.
-4. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé, on envoie les uniforms du modèle, puis `drawElements` lance le dessin. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche.
+4. **Éclairage.** Les réglages de la lumière (modèle, position, couleur, reflet) sont aussi des uniforms, envoyés par `setLighting` seulement quand l'utilisateur les change, pas à chaque image. Voir la section suivante.
+5. **Boucle.** À chaque image (`requestAnimationFrame`), on avance l'angle selon le temps écoulé, on envoie les uniforms du modèle, puis `drawElements` lance le dessin. Le GPU applique le vertex shader à chaque sommet, transforme les triangles en pixels, applique le fragment shader à chaque pixel, et le test de profondeur garde le pixel le plus proche.
+
+## Comment un pixel est éclairé (`mesh.frag`)
+
+Pour chaque pixel, le fragment shader connaît sa position dans le monde (`vWorldPosition`, calculée par le vertex shader puis interpolée) et sa normale. Il en déduit trois vecteurs de longueur 1 : **N** la normale, **L** la direction vers la lumière (position de la lumière moins position du pixel, normalisée) et **V** la direction vers l'oeil (la caméra est en (0, 0, 5)).
+
+1. **Diffus (les trois modèles).** `max(N·L, 0)` : le cosinus de l'angle entre la normale et la lumière. Une face de face à la lumière est pleine, une face de côté ou dos à la lumière ne reçoit rien.
+2. **Reflet (Blinn-Phong et Gaussien seulement).** On calcule **H**, le vecteur de demi-angle (le milieu entre L et V, normalisé). Quand la normale pointe vers H, la lumière se réfléchit droit vers l'oeil : c'est le point le plus brillant. Le reflet n'existe que si N·L > 0.
+   - Blinn-Phong : `max(N·H, 0) ^ brillance`. Une brillance grande donne un petit reflet net.
+   - Gaussien : `exp(-(theta - moyenne)^2 / (2 * ecartType^2))` avec `theta = acos(N·H)`. Une courbe en cloche de l'angle.
+3. **Composition.** `couleur = objet * ambiant + objet * lumière * (1 - ambiant) * diffus + lumière * intensité * reflet`, bornée à 1. Avec la lumière blanche, le modèle Lambert et l'ambiant par défaut (0,35), on retrouve l'éclairage diffus d'avant.
+
+Les deux formules du reflet sont recopiées en TypeScript dans `core/lighting.ts` (`blinnPhongSpecular`, `gaussianSpecular`) : les tests ne peuvent pas exécuter un shader, ils vérifient donc ces versions-là sur des valeurs connues.
 
 ## Comment un fichier OBJ devient un maillage (`core/obj.ts`)
 

@@ -169,6 +169,9 @@ export function createFakeGl(options: FakeGlOptions = {}) {
       record(location, value, transpose),
     ),
     uniform3fv: vi.fn((location: unknown, value: Iterable<number>) => record(location, value)),
+    // Un seul nombre : rangé dans un tableau pour partager `record` avec les autres uniforms.
+    uniform1i: vi.fn((location: unknown, value: number) => record(location, [value])),
+    uniform1f: vi.fn((location: unknown, value: number) => record(location, [value])),
 
     clearColor: vi.fn(),
     clear: vi.fn(),

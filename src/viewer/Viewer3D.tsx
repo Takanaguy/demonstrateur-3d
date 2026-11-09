@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { DEFAULT_LIGHTING, type LightingSettings } from '../core/lighting'
 import type { Mesh } from '../core/mesh'
 import { advanceRotation } from '../core/rotation'
 import { createShape } from '../core/shapes'
@@ -31,6 +32,8 @@ interface Viewer3DProps {
   className?: string
   /** Maillage à afficher. Quand il change, il remplace l'ancien sans recréer le canvas ni le contexte WebGL. */
   mesh?: Mesh
+  /** Réglages de l'éclairage. Quand ils changent, ils sont envoyés au GPU sans recréer le contexte WebGL. */
+  lighting?: LightingSettings
   /** Description de ce qui est affiché, lue par les lecteurs d'écran (le canvas n'a pas de texte). */
   label?: string
   /**
@@ -44,9 +47,9 @@ interface Viewer3DProps {
  * Crée le renderer, ou renvoie `null` (en journalisant la cause) si le GPU ou les shaders le
  * refusent. Le message du compilateur arrive ainsi dans la console, utile pour comprendre.
  */
-function tryCreateRenderer(gl: WebGL2RenderingContext, mesh: Mesh): MeshRenderer | null {
+function tryCreateRenderer(gl: WebGL2RenderingContext, mesh: Mesh, lighting: LightingSettings): MeshRenderer | null {
   try {
-    return createMeshRenderer(gl, mesh)
+    return createMeshRenderer(gl, mesh, lighting)
   } catch (error) {
     console.error('Démonstrateur 3D : création du rendu impossible.', error)
     return null
@@ -66,11 +69,12 @@ function tryCreateRenderer(gl: WebGL2RenderingContext, mesh: Mesh): MeshRenderer
  * d'animation.
  *
  * Le contexte WebGL et le renderer sont créés une seule fois ; changer la prop `mesh` ne fait
- * qu'appeler `setMesh` (voir le second effet).
+ * qu'appeler `setMesh` (voir le second effet). Il en va de même pour la prop `lighting` (troisième effet).
  */
 export function Viewer3D({
   className = DEFAULT_SIZE_CLASSES,
   mesh = DEFAULT_MESH,
+  lighting = DEFAULT_LIGHTING,
   label = 'Un objet en 3D qui tourne lentement',
   onMeshError,
 }: Viewer3DProps) {
@@ -78,6 +82,9 @@ export function Viewer3D({
   // Le maillage actuellement affiché. Le renderer est recréé après une perte de contexte : c'est
   // cette référence qui lui dit quoi redessiner (le DERNIER maillage choisi, pas le premier).
   const meshRef = useRef(mesh)
+  // Les derniers réglages d'éclairage, pour la même raison : le renderer recréé après une perte de
+  // contexte repart des réglages par défaut du GPU, il faut lui redonner les DERNIERS.
+  const lightingRef = useRef(lighting)
   // Le renderer vivant, partagé entre l'effet principal (qui le crée) et l'effet du maillage.
   const rendererRef = useRef<MeshRenderer | null>(null)
   // Initialiseur paresseux : la détection ne tourne qu'au premier rendu, pas à chacun.
@@ -91,7 +98,7 @@ export function Viewer3D({
 
     // `antialias` : lissage des bords (dentelures) fait par le GPU, si le navigateur le permet.
     const gl = canvas.getContext('webgl2', { antialias: true })
-    let renderer = gl ? tryCreateRenderer(gl, meshRef.current) : null
+    let renderer = gl ? tryCreateRenderer(gl, meshRef.current, lightingRef.current) : null
     if (!gl || !renderer) {
       // On ne sait si le contexte et les shaders sont acceptés qu'en les essayant : le rendu de
       // repli est donc déclenché ici, une seule fois, dans ce cas d'échec rare.
@@ -156,7 +163,7 @@ export function Viewer3D({
     }
     const onContextRestored = () => {
       // Le contexte est de retour mais vide : on recrée programme, buffers et VAO, puis on repart.
-      renderer = tryCreateRenderer(gl, meshRef.current)
+      renderer = tryCreateRenderer(gl, meshRef.current, lightingRef.current)
       rendererRef.current = renderer
       if (!renderer) {
         setRenderFailed(true)
@@ -201,6 +208,16 @@ export function Viewer3D({
     // Pas de renderer (contexte perdu en ce moment) : on retient quand même le choix, la restauration l'utilisera.
     meshRef.current = mesh
   }, [mesh, onMeshError])
+
+  // Changement d'éclairage : même logique que pour le maillage, on garde contexte, canvas et boucle et on
+  // renvoie seulement les uniforms. Rien à faire au premier rendu (le renderer vient de les recevoir).
+  useEffect(() => {
+    if (lightingRef.current === lighting) return
+    // On retient TOUJOURS les réglages, même sans renderer (contexte perdu en ce moment) : la
+    // restauration les réappliquera. `setLighting` ne lève pas d'erreur (les réglages sont assainis).
+    lightingRef.current = lighting
+    rendererRef.current?.setLighting(lighting)
+  }, [lighting])
 
   if (!webglAvailable || renderFailed) {
     return (

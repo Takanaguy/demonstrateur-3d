@@ -1,7 +1,7 @@
 import { createCubeGeometry } from '../core/cube'
 import { boundingBox, normalizeToUnitBox, type Mesh } from '../core/mesh'
 import { createPlane, createSphere } from '../core/shapes'
-import { length } from '../core/vec3'
+import { DEFAULT_LIGHTING, type LightingSettings } from '../core/lighting'
 import { createFakeGl } from '../test/fakeGl'
 import { createMeshRenderer } from './meshRenderer'
 
@@ -32,7 +32,7 @@ describe('createMeshRenderer : création', () => {
     expect(a).toBe(1)
   })
 
-  it('envoie la couleur du cube (#2E5D7C) et une direction de lumière de longueur 1', () => {
+  it('envoie la couleur du cube (#2E5D7C)', () => {
     const { gl, lastUniform } = createFakeGl()
 
     createMeshRenderer(gl, cube)
@@ -41,10 +41,14 @@ describe('createMeshRenderer : création', () => {
     expect(color[0]).toBeCloseTo(0x2e / 255)
     expect(color[1]).toBeCloseTo(0x5d / 255)
     expect(color[2]).toBeCloseTo(0x7c / 255)
-    const light = lastUniform('uLightDirection') as [number, number, number]
-    expect(length(light)).toBeCloseTo(1, 5)
-    // La lumière vient d'en haut, de la droite et de face (3, 4, 5) : toutes composantes positives.
-    expect(light.every((c) => c > 0)).toBe(true)
+  })
+
+  it("envoie la position de la caméra (0, 0, 5), la même que celle de la matrice de vue, pour calculer la direction vers l'oeil", () => {
+    const { gl, lastUniform } = createFakeGl()
+
+    createMeshRenderer(gl, cube)
+
+    expect(lastUniform('uCameraPosition')).toEqual([0, 0, 5])
   })
 
   it('envoie la matrice de vue de la caméra placée en (0, 0, 5) : translation de -5 en Z', () => {
@@ -113,6 +117,170 @@ describe('createMeshRenderer : création', () => {
     expect(() => createMeshRenderer(gl, cube)).toThrow(/buffer/)
 
     expect(liveCounts()).toEqual({ shader: 0, program: 0, buffer: 0, vertexArray: 0 })
+  })
+})
+
+describe('createMeshRenderer : éclairage', () => {
+  const BLINN_PHONG: LightingSettings = {
+    model: 'blinn-phong',
+    position: [-2, 6.5, 1],
+    color: '#FF8000',
+    ambient: 0.2,
+    specular: 0.7,
+    shininess: 90,
+    gaussianMean: 0.25,
+    gaussianStdDev: 0.3,
+  }
+
+  it('envoie les réglages par défaut dès la création (lumière ponctuelle en (3, 4, 5), blanche, Lambert)', () => {
+    const { gl, lastUniform } = createFakeGl()
+
+    createMeshRenderer(gl, cube)
+
+    expect(lastUniform('uLightingModel')).toEqual([0])
+    expect(lastUniform('uLightPosition')).toEqual([3, 4, 5])
+    expect(lastUniform('uLightColor')).toEqual([1, 1, 1])
+    expect(lastUniform('uAmbient')).toEqual([0.35])
+    expect(lastUniform('uSpecularIntensity')).toEqual([0.6])
+    expect(lastUniform('uShininess')).toEqual([32])
+    expect(lastUniform('uGaussianMean')).toEqual([0])
+    expect(lastUniform('uGaussianStdDev')).toEqual([0.15])
+  })
+
+  it("applique les réglages donnés à la création plutôt que ceux par défaut", () => {
+    const { gl, lastUniform } = createFakeGl()
+
+    createMeshRenderer(gl, cube, BLINN_PHONG)
+
+    expect(lastUniform('uLightingModel')).toEqual([1])
+    expect(lastUniform('uLightPosition')).toEqual([-2, 6.5, 1])
+  })
+
+  it('setLighting envoie chaque réglage au bon uniform, avec la bonne valeur', () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setLighting(BLINN_PHONG)
+
+    expect(lastUniform('uLightingModel')).toEqual([1])
+    expect(lastUniform('uLightPosition')).toEqual([-2, 6.5, 1])
+    const color = lastUniform('uLightColor')!
+    expect(color[0]).toBeCloseTo(1)
+    expect(color[1]).toBeCloseTo(0x80 / 255)
+    expect(color[2]).toBeCloseTo(0)
+    expect(lastUniform('uAmbient')).toEqual([0.2])
+    expect(lastUniform('uSpecularIntensity')).toEqual([0.7])
+    expect(lastUniform('uShininess')).toEqual([90])
+    expect(lastUniform('uGaussianMean')).toEqual([0.25])
+    expect(lastUniform('uGaussianStdDev')).toEqual([0.3])
+  })
+
+  it('envoie un numéro différent par modèle : 0 Lambert, 1 Blinn-Phong, 2 Gaussien (comme les constantes de mesh.frag)', () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setLighting({ ...DEFAULT_LIGHTING, model: 'blinn-phong' })
+    expect(lastUniform('uLightingModel')).toEqual([1])
+    renderer.setLighting({ ...DEFAULT_LIGHTING, model: 'gaussian' })
+    expect(lastUniform('uLightingModel')).toEqual([2])
+    renderer.setLighting({ ...DEFAULT_LIGHTING, model: 'lambert' })
+    expect(lastUniform('uLightingModel')).toEqual([0])
+  })
+
+  it('envoie le modèle avec uniform1i (un entier), pas avec uniform1f, et les réels avec uniform1f', () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.uniform1i.mockClear()
+    mocks.uniform1f.mockClear()
+
+    renderer.setLighting(BLINN_PHONG)
+
+    // `uniform1i` n'a reçu QUE le modèle ; `uniform1f` ne l'a pas reçu.
+    expect(mocks.uniform1i.mock.calls.map(([location, value]) => [(location as { name: string }).name, value])).toEqual([
+      ['uLightingModel', 1],
+    ])
+    const floatNames = mocks.uniform1f.mock.calls.map(([location]) => (location as { name: string }).name)
+    expect(floatNames).toEqual(['uAmbient', 'uSpecularIntensity', 'uShininess', 'uGaussianMean', 'uGaussianStdDev'])
+  })
+
+  it('active le programme AVANT d\'envoyer les uniforms (sinon ils iraient au mauvais programme)', () => {
+    const { gl, mocks } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.useProgram.mockClear()
+    mocks.uniform1i.mockClear()
+
+    renderer.setLighting(BLINN_PHONG)
+
+    expect(mocks.useProgram).toHaveBeenCalledOnce()
+    expect(mocks.useProgram.mock.invocationCallOrder[0]).toBeLessThan(mocks.uniform1i.mock.invocationCallOrder[0]!)
+  })
+
+  it('borne les réglages hors plage avant de les envoyer', () => {
+    const { gl, lastUniform } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+
+    renderer.setLighting({ ...DEFAULT_LIGHTING, position: [100, -100, 3], ambient: 4, shininess: 9999, gaussianStdDev: 0 })
+
+    expect(lastUniform('uLightPosition')).toEqual([10, -10, 3])
+    expect(lastUniform('uAmbient')).toEqual([1])
+    expect(lastUniform('uShininess')).toEqual([256])
+    // Un écart type de 0 ferait diviser par zéro dans le shader : il est remonté au minimum.
+    expect(lastUniform('uGaussianStdDev')).toEqual([0.02])
+  })
+
+  it('n\'envoie JAMAIS de NaN ni d\'infini, même avec des réglages fous (au départ comme après)', () => {
+    const crazy = {
+      ...DEFAULT_LIGHTING,
+      position: [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+      ambient: Number.NaN,
+      specular: Number.POSITIVE_INFINITY,
+      shininess: Number.NaN,
+      gaussianMean: Number.NaN,
+      gaussianStdDev: Number.NaN,
+      color: 'pas une couleur',
+      model: 'inconnu',
+    } as unknown as LightingSettings
+    const { gl, uniformHistory } = createFakeGl()
+
+    const renderer = createMeshRenderer(gl, cube, crazy)
+    renderer.setLighting(crazy)
+
+    const names = ['uLightPosition', 'uLightColor', 'uAmbient', 'uSpecularIntensity', 'uShininess', 'uGaussianMean', 'uGaussianStdDev', 'uLightingModel']
+    for (const name of names) {
+      const sent = uniformHistory(name).flatMap((call) => call.values)
+      expect(sent.length, name).toBeGreaterThan(0)
+      expect(sent.every(Number.isFinite), name).toBe(true)
+    }
+    // Les valeurs par défaut sont revenues à la place.
+    expect(uniformHistory('uLightPosition').at(-1)!.values).toEqual([3, 4, 5])
+    expect(uniformHistory('uLightingModel').at(-1)!.values).toEqual([0])
+  })
+
+  it('setLighting ne touche ni au maillage ni aux matrices ni à la couleur de l\'objet', () => {
+    const { gl, mocks, liveCounts } = createFakeGl()
+    const renderer = createMeshRenderer(gl, cube)
+    mocks.createVertexArray.mockClear()
+    mocks.uniformMatrix4fv.mockClear()
+    mocks.uniformMatrix3fv.mockClear()
+    const colorCalls = mocks.uniform3fv.mock.calls.filter(([location]) => (location as { name: string }).name === 'uColor').length
+
+    renderer.setLighting(BLINN_PHONG)
+
+    expect(mocks.createVertexArray).not.toHaveBeenCalled()
+    expect(mocks.uniformMatrix4fv).not.toHaveBeenCalled()
+    expect(mocks.uniformMatrix3fv).not.toHaveBeenCalled()
+    expect(mocks.uniform3fv.mock.calls.filter(([location]) => (location as { name: string }).name === 'uColor')).toHaveLength(colorCalls)
+    expect(liveCounts()).toEqual({ shader: 0, program: 1, buffer: 3, vertexArray: 1 })
+  })
+
+  it('ne dépend plus de la direction fixe d\'avant : il n\'y a plus d\'uniform uLightDirection', () => {
+    const { gl, mocks } = createFakeGl()
+
+    createMeshRenderer(gl, cube)
+
+    const requested = mocks.getUniformLocation.mock.calls.map(([, name]) => name)
+    expect(requested).not.toContain('uLightDirection')
+    expect(requested).toEqual(expect.arrayContaining(['uLightPosition', 'uCameraPosition', 'uLightingModel']))
   })
 })
 

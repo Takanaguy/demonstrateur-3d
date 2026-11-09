@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { normalizeToUnitBox } from './core/mesh'
@@ -115,7 +115,8 @@ describe('App : chargement d\'un fichier .obj', () => {
     expect(Math.max(...sent.positions)).toBeCloseTo(1, 5)
     expect(Math.min(...sent.positions)).toBeCloseTo(-1, 5)
     expect(screen.queryByRole('alert')).toBeNull()
-    for (const radio of screen.getAllByRole('radio')) expect(radio).not.toBeChecked()
+    // Aucune FORME n'est cochée (les radios du modèle d'éclairage, eux, restent cochés).
+    for (const radio of within(screen.getByRole('group', { name: 'Forme' })).getAllByRole('radio')) expect(radio).not.toBeChecked()
     expect(screen.getByRole('button', { name: 'Revenir au cube' })).not.toHaveAttribute('aria-disabled')
   })
 
@@ -305,5 +306,87 @@ describe('App : perte de contexte', () => {
 
     expect(fake.liveCounts()).toEqual(ONE_MESH_ALIVE)
     expect(lastUploadedMesh(fake).positions).toHaveLength(4 * 3)
+  })
+})
+
+describe('App : éclairage', () => {
+  it('au départ : le panneau est là, en Lambert, et le GPU a reçu les réglages par défaut', () => {
+    render(<App />)
+
+    expect(screen.getByRole('region', { name: "Réglages de l'éclairage" })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Lambert' })).toBeChecked()
+    expect(env.pageFake().lastUniform('uLightingModel')).toEqual([0])
+    expect(env.pageFake().lastUniform('uLightPosition')).toEqual([3, 4, 5])
+  })
+
+  it('choisir Blinn-Phong envoie le modèle au GPU et fait apparaître la brillance', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByRole('radio', { name: 'Blinn-Phong' }))
+
+    expect(env.pageFake().lastUniform('uLightingModel')).toEqual([1])
+    expect(screen.getByLabelText('Brillance')).toBeInTheDocument()
+  })
+
+  it('bouger un curseur de position envoie la nouvelle position au GPU', () => {
+    render(<App />)
+
+    fireEvent.change(screen.getByLabelText('Position X'), { target: { value: '-6' } })
+
+    expect(env.pageFake().lastUniform('uLightPosition')).toEqual([-6, 4, 5])
+  })
+
+  it("changer l'éclairage ne recrée ni le canvas, ni le contexte, ni le programme, ni le maillage", async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    const canvas = container.querySelector('canvas')
+    const contextRequests = env.getContext.mock.calls.length
+
+    await user.click(screen.getByRole('radio', { name: 'Gaussien' }))
+    fireEvent.change(screen.getByLabelText('Position Z'), { target: { value: '8' } })
+
+    expect(container.querySelector('canvas')).toBe(canvas)
+    expect(env.getContext.mock.calls.length).toBe(contextRequests)
+    expect(env.pageFake().mocks.createProgram).toHaveBeenCalledOnce()
+    expect(env.pageFake().mocks.createVertexArray).toHaveBeenCalledOnce()
+  })
+
+  it('« Réinitialiser l\'éclairage » remet les réglages par défaut à l\'écran ET sur le GPU', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Gaussien' }))
+    fireEvent.change(screen.getByLabelText('Position X'), { target: { value: '-6' } })
+
+    await user.click(screen.getByRole('button', { name: "Réinitialiser l'éclairage" }))
+
+    expect(screen.getByRole('radio', { name: 'Lambert' })).toBeChecked()
+    expect(screen.getByLabelText('Position X')).toHaveValue('3')
+    expect(env.pageFake().lastUniform('uLightingModel')).toEqual([0])
+    expect(env.pageFake().lastUniform('uLightPosition')).toEqual([3, 4, 5])
+  })
+
+  it('changer de forme garde les réglages d\'éclairage choisis', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Blinn-Phong' }))
+
+    await user.click(screen.getByRole('radio', { name: 'Sphère' }))
+
+    expect(screen.getByRole('radio', { name: 'Blinn-Phong' })).toBeChecked()
+    expect(env.pageFake().lastUniform('uLightingModel')).toEqual([1])
+  })
+
+  it('après une perte de contexte, les DERNIERS réglages d\'éclairage reviennent', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<App />)
+    await user.click(screen.getByRole('radio', { name: 'Gaussien' }))
+    fireEvent.change(screen.getByLabelText('Position Y'), { target: { value: '-3' } })
+    const fake = env.pageFake()
+
+    env.loseAndRestoreContext(container.querySelector('canvas')!, fake)
+
+    expect(fake.lastUniform('uLightingModel')).toEqual([2])
+    expect(fake.lastUniform('uLightPosition')).toEqual([3, -3, 5])
   })
 })

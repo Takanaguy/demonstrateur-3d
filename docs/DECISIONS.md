@@ -94,6 +94,8 @@ Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistan
 
 **Mise à jour (ticket 2).** Les shaders s'appellent maintenant `mesh.vert` et `mesh.frag` (ils ne dessinent plus que des cubes), et `cubeRenderer.ts` est devenu `meshRenderer.ts` (décisions 10 à 14).
 
+**Mise à jour (ticket 3).** La lumière directionnelle fixe décrite ci-dessus est remplacée par une lumière ponctuelle réglable et trois modèles d'éclairage (décisions 16 et 17).
+
 **Compromis (coûts réels).**
 - Beaucoup plus de code à écrire, à relire et à tester : maths des matrices, compilation des shaders, gestion des buffers, nettoyage des ressources GPU, perte de contexte. Three.js faisait tout cela.
 - Pas de chargeur OBJ ni de contrôles à la souris fournis : il faudra les écrire aussi.
@@ -199,9 +201,54 @@ Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistan
 
 **Compromis.** Pendant un court instant, ancien et nouveau maillage existent ensemble sur le GPU (le temps de la création). C'est le prix de la garantie « l'ancien reste si le nouveau échoue ». Le contrôle par `getError` n'est vérifié qu'avec un faux contexte qui simule `OUT_OF_MEMORY` : un vrai manque de mémoire GPU n'a pas été provoqué. Certains pilotes peuvent aussi différer l'allocation et ne signaler l'échec qu'au dessin ; ce cas n'est pas couvert.
 
+### 16. Lumière ponctuelle et trois modèles d'éclairage dans un seul shader
+
+**Contexte.** L'éclairage du ticket 1b était une lumière directionnelle fixe (Lambert + ambiant 0,35). Le projet de cours d'origine comparait plusieurs modèles d'éclairage, et le démonstrateur doit permettre de les comparer en direct sur la même forme.
+
+**Décision.**
+- La lumière devient **ponctuelle** : elle a une position réglable dans le monde (x, y, z, chacune de -10 à 10) et, pour chaque pixel, la direction vers elle est `L = normalize(positionLumière - positionPixel)`. Le vertex shader transmet donc la position du pixel dans le monde (`vWorldPosition = (uModel * vec4(aPosition, 1)).xyz`, interpolée entre les sommets). La caméra, fixe en (0, 0, 5), est envoyée en uniform (`uCameraPosition`) pour calculer la direction vers l'oeil `V` pour chaque pixel.
+- Trois modèles, choisis par un **uniform entier** (`uLightingModel` : 0 Lambert, 1 Blinn-Phong, 2 Gaussien) et un `if` dans le fragment shader. Un seul programme, aucune recompilation quand on change de modèle. Côté TypeScript, `MODEL_NUMBER` (un `Record` complet, donc TypeScript refuse un modèle sans numéro) donne le numéro ; côté shader, des constantes `MODEL_*`. Un test vérifie que les deux côtés sont d'accord.
+- **Lambert** : diffus seul, `max(N·L, 0)`. **Blinn-Phong** et **Gaussien** ajoutent un reflet. Avec `H = normalize(L + V)` (le vecteur de demi-angle), Blinn-Phong vaut `max(N·H, 0) ^ brillance` et le gaussien `exp(-(theta - moyenne)^2 / (2 * ecartType^2))` avec `theta = acos(clamp(N·H, -1, 1))` en radians. Le reflet n'existe que si `N·L > 0` (une face qui ne reçoit pas la lumière ne brille pas).
+- Composition : `ambiant = couleurObjet * ambiant` (ambiant blanc), `diffus = couleurObjet * couleurLumière * (1 - ambiant) * max(N·L, 0)`, `reflet = couleurLumière * intensité * formule`. Somme bornée à 1 par un `min` explicite. Avec la lumière blanche et le modèle Lambert, on retrouve exactement l'éclairage diffus d'avant ; seule la direction de la lumière dépend maintenant du pixel. Position de départ (3, 4, 5), comme avant.
+- Le fragment shader passe en **`precision highp float`** (il était en `mediump`). `acos` près de 1 est très imprécis en 16 bits : la courbe gaussienne en dépend, et on verrait un reflet qui se découpe en paliers. `highp` est aussi plus sûr pour la position du pixel dans le monde.
+- Le renderer envoie les réglages par `setLighting`, appelée aussi à la création. `Viewer3D` reçoit les réglages en prop, comme le maillage (décision 15) : une référence retient les derniers pour la restauration après une perte de contexte, un effet appelle `setLighting` quand la prop change, sans recréer le contexte, et les réglages choisis pendant une perte de contexte sont retenus quand même.
+- Dans l'interface, les contrôles inutiles pour le modèle choisi sont **retirés de la page** (pas seulement grisés) : brillance pour Blinn-Phong seulement, moyenne et écart type pour le gaussien seulement, intensité du reflet pour les deux modèles à reflet.
+
+**Pourquoi.** Une lumière ponctuelle donne un reflet qui dépend de la position (un reflet sur une sphère bouge quand on déplace la lumière), ce qui rend la différence entre les modèles visible. Un `if` sur un uniform entier est simple à expliquer et peu coûteux pour un petit programme, alors que trois programmes demanderaient trois compilations, trois jeux d'uniforms et de la gestion de cycle de vie en plus.
+
+**Compromis.**
+- Le `if` est évalué pour chaque pixel. Sur un GPU, les pixels voisins prennent la même branche (l'uniform est le même pour tous), le coût est négligeable ici ; ce serait à mesurer sur un très gros écran ou un maillage lourd.
+- L'éclairage est calculé par pixel, mais un cube à faces planes a des normales constantes par face : seules les directions L et V varient d'un pixel à l'autre, donc le reflet de Blinn-Phong y est large, faible ou absent (voir « Limites connues »).
+- Un vecteur nul (lumière exactement au point du pixel, ou L et V opposés) donnerait NaN en le normalisant. Le cas L + V nul est protégé dans le shader ; la lumière posée exactement sur la surface d'un pixel ne l'est pas (cas d'un seul point, sans conséquence visible).
+- Le rendu réel n'a pas pu être vérifié par les tests : les shaders ne sont jamais compilés ni exécutés dans jsdom.
+
+### 17. `core/lighting.ts` : réglages assainis et formules de référence testables
+
+**Contexte.** Les shaders ne sont pas exécutés par les tests, et un nombre invalide envoyé à un uniform ne produit aucune erreur : seulement des pixels faux sur tout l'objet.
+
+**Décision.** Un fichier `core/lighting.ts`, sans React ni WebGL, contient :
+- Le type `LightingSettings`, les réglages par défaut (`DEFAULT_LIGHTING`) et les plages (`POSITION_RANGE`, `AMBIENT_RANGE`...), partagés entre le panneau (bornes des curseurs) et le renderer.
+- `sanitizeLighting(settings)` : borne chaque nombre à sa plage, remplace NaN et Infinity par la valeur par défaut, et retombe sur la valeur par défaut pour un modèle ou une couleur invalide. Le renderer l'appelle avant tout envoi au GPU.
+- `blinnPhongSpecular(nDotH, brillance)` et `gaussianSpecular(nDotH, moyenne, écartType)` : les deux formules du reflet en TypeScript, identiques à celles du shader. Elles servent de **référence testable** : les tests vérifient des valeurs connues (Blinn-Phong vaut 1 pour `N·H = 1` et 0 pour `N·H = 0`, il augmente avec `N·H` ; le gaussien est maximal à `theta = moyenne`, vaut `exp(-0,5)` à un écart type, est symétrique). Le shader renvoie vers ces fonctions dans un commentaire, et l'inverse aussi.
+
+**Pourquoi.**
+- Les plages choisies sont des choix d'interface, pas des valeurs imposées par la théorie : l'écart type minimal (0,02 rad) existe uniquement pour éviter une division par zéro dans la formule gaussienne ; la moyenne est limitée à 0,5 rad (environ 29 degrés) pour que le reflet reste près du point brillant.
+- Remplacer une valeur folle par la valeur par défaut (plutôt que la borner) évite qu'un Infinity devienne un réglage extrême sans que personne ne le sache.
+- Le test « les formules du shader sont les bonnes » ne peut pas être fait pour de vrai ; la référence TypeScript garantit au moins que les formules sont justes sur le papier, et un test lit le texte du shader pour vérifier que les expressions attendues y figurent (une simple recherche de texte, il ne compare rien à la référence TypeScript).
+
+**Compromis.**
+- Rien ne garantit mécaniquement que le shader et la référence restent identiques : si on modifie l'un sans l'autre, seul le test du texte du shader (qui cherche des expressions précises, sans les comparer à la référence) peut le signaler, et seulement si l'expression cherchée a changé. C'est une garantie plus faible qu'un vrai test d'exécution sur GPU.
+- Les pas des curseurs sont des choix d'ergonomie (0,01 pour les valeurs entre 0 et 1, 0,5 pour la position, 1 pour la brillance), pas des mesures.
+
 ## Limites connues
 
-- Rien de ce qui est listé dans « Pas encore fait » du README n'existe encore (modèles d'éclairage avancés, fil de fer, affichage des normales et de la boîte englobante, souris).
+- Les modèles d'éclairage n'ont pas été vus à l'écran par les tests : les shaders ne sont jamais compilés ni exécutés dans jsdom, le résultat visible (reflet, anneau gaussien, lumière colorée) reste à contrôler à la main dans un navigateur.
+- L'éclairage n'a pas de correction gamma : les calculs se font directement sur les valeurs sRGB (voir aussi la décision 7), donc les dégradés ne sont pas physiquement exacts.
+- Pas d'ombres : une partie de l'objet ne cache pas la lumière à une autre partie, et un objet ne projette aucune ombre. Une seule lumière (ponctuelle), pas de plusieurs sources.
+- Le reflet gaussien avec une moyenne non nulle donne un **anneau** brillant (le reflet est maximal quand `theta` vaut la moyenne, pas au centre) : ce n'est pas un modèle physique de matériau, seulement la courbe en cloche demandée.
+- Un cube à faces planes a un reflet faible avec Blinn-Phong, voire invisible : ses normales sont constantes sur chaque face, donc `N·H` ne varie que très lentement sur une face (seules les directions vers la lumière et vers l'oeil changent d'un pixel à l'autre) : le reflet est large et faible, ou absent, au lieu d'être une tache nette. Une sphère ou un cône (normales qui varient) montrent bien mieux le reflet.
+- Les formules de reflet existent en double (GLSL dans le shader, TypeScript dans `core/lighting.ts`) : il faut les modifier ensemble (décision 17).
+- Rien de ce qui est listé dans « Pas encore fait » du README n'existe encore (fil de fer, affichage des normales et de la boîte englobante, souris).
 - L'analyseur OBJ suppose des polygones convexes (triangulation en éventail), ignore textures et matériaux, ne recolle pas les lignes terminées par `\`, et suppose des triangles anti-horaires vus de l'extérieur (voir les décisions 11 et 13).
 - L'analyse du fichier tourne sur le fil principal : un fichier proche des limites (décision 12) peut figer l'onglet quelques secondes.
 - Les limites de taille (50 Mo, 1 million de triangles...) sont des choix de prudence, pas des mesures de performance : aucun test n'a été fait avec de gros fichiers dans un vrai navigateur.

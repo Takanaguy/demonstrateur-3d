@@ -6,7 +6,7 @@
  * Le pipeline, dans l'ordre :
  * 1. Les SHADERS (mesh.vert, mesh.frag) sont compilés et liés en un programme.
  * 2. Les BUFFERS (positions, normales, indices) sont copiés sur le GPU et rangés dans un VAO.
- * 3. Les UNIFORMS (matrices, couleur, lumière) sont envoyés au programme.
+ * 3. Les UNIFORMS (matrices, couleur, réglages de la lumière) sont envoyés au programme.
  * 4. `drawElements` lance le dessin : le GPU exécute le vertex shader sur chaque sommet, rasterise
  *    les triangles en pixels, puis exécute le fragment shader sur chaque pixel.
  */
@@ -21,8 +21,9 @@ import {
   rotationY,
   type Mat4,
 } from '../core/mat4'
+import { DEFAULT_LIGHTING, sanitizeLighting, type LightingModel, type LightingSettings } from '../core/lighting'
 import { normalizeToUnitBox, type Mesh } from '../core/mesh'
-import { normalize, type Vec3 } from '../core/vec3'
+import type { Vec3 } from '../core/vec3'
 import { createIndexedMesh, type IndexedMesh } from './buffers'
 import { createProgram } from './shader'
 import fragmentSource from './shaders/mesh.frag?raw'
@@ -39,17 +40,40 @@ const CAMERA_POSITION: Vec3 = [0, 0, 5]
 const CAMERA_TARGET: Vec3 = [0, 0, 0]
 const CAMERA_UP: Vec3 = [0, 1, 0]
 
-/** Position de la lumière dans le monde. Elle est directionnelle : seule sa direction compte. */
-const LIGHT_POSITION: Vec3 = [3, 4, 5]
-
 /**
  * Inclinaison fixe de l'objet autour de X. Vu pile de face, un cube ressemble à un carré plat, et
  * un plan horizontal à un trait. C'est la même valeur que dans la première version du démonstrateur.
  */
 const TILT = 0.4
 
+/**
+ * Numéro de chaque modèle d'éclairage, tel que le lit le fragment shader (uniform entier
+ * `uLightingModel`). Ce sont les constantes MODEL_* de mesh.frag. Un `Record` oblige TypeScript à
+ * protester si un modèle est ajouté sans numéro.
+ */
+const MODEL_NUMBER: Record<LightingModel, number> = {
+  lambert: 0,
+  'blinn-phong': 1,
+  gaussian: 2,
+}
+
 /** Les noms des uniforms déclarés dans les shaders. */
-const UNIFORM_NAMES = ['uModel', 'uView', 'uProjection', 'uNormalMatrix', 'uColor', 'uLightDirection'] as const
+const UNIFORM_NAMES = [
+  'uModel',
+  'uView',
+  'uProjection',
+  'uNormalMatrix',
+  'uColor',
+  'uCameraPosition',
+  'uLightingModel',
+  'uLightPosition',
+  'uLightColor',
+  'uAmbient',
+  'uSpecularIntensity',
+  'uShininess',
+  'uGaussianMean',
+  'uGaussianStdDev',
+] as const
 type UniformName = (typeof UNIFORM_NAMES)[number]
 
 export interface MeshRenderer {
@@ -62,6 +86,11 @@ export interface MeshRenderer {
    * échoue (mémoire GPU, contexte perdu), l'erreur est relancée et l'ancien reste affiché.
    */
   setMesh: (mesh: Mesh) => void
+  /**
+   * Change l'éclairage (modèle, position et couleur de la lumière, reflet...). Les réglages sont
+   * d'abord assainis (bornés, jamais de NaN) puis envoyés au GPU ; le prochain dessin les utilise.
+   */
+  setLighting: (settings: LightingSettings) => void
   /** Supprime le programme et le maillage (buffers + VAO). */
   dispose: () => void
 }
@@ -89,7 +118,11 @@ function uploadMesh(gl: WebGL2RenderingContext, mesh: Mesh): IndexedMesh {
  *
  * À rappeler après une perte de contexte : toutes les ressources GPU ont alors disparu.
  */
-export function createMeshRenderer(gl: WebGL2RenderingContext, initialMesh: Mesh): MeshRenderer {
+export function createMeshRenderer(
+  gl: WebGL2RenderingContext,
+  initialMesh: Mesh,
+  initialLighting: LightingSettings = DEFAULT_LIGHTING,
+): MeshRenderer {
   const program = createProgram(gl, vertexSource, fragmentSource)
 
   let current: IndexedMesh
@@ -119,8 +152,28 @@ export function createMeshRenderer(gl: WebGL2RenderingContext, initialMesh: Mesh
   // `false` : la matrice est déjà en colonnes-majeures, WebGL n'a pas à la transposer.
   gl.uniformMatrix4fv(uniforms.uView, false, view)
   gl.uniform3fv(uniforms.uColor, parseHexColor(OBJECT_COLOR))
-  // Direction VERS la lumière, normalisée : le shader en fait un produit scalaire avec la normale.
-  gl.uniform3fv(uniforms.uLightDirection, normalize(LIGHT_POSITION))
+  // La caméra ne bouge pas : sa position (la même que celle de la matrice de vue) sert au fragment
+  // shader à calculer, pour chaque pixel, la direction vers l'oeil (nécessaire au reflet).
+  gl.uniform3fv(uniforms.uCameraPosition, CAMERA_POSITION)
+
+  // --- Éclairage : il change quand l'utilisateur touche aux réglages, donc il a sa propre fonction,
+  // appelée ici au départ puis par `setLighting`. Elle refait `useProgram` car elle peut être
+  // appelée à n'importe quel moment, quel que soit le programme actif.
+  const applyLighting = (settings: LightingSettings) => {
+    // Assaini AVANT tout envoi : un NaN envoyé à un uniform ne produit aucune erreur, seulement des
+    // pixels faux dans tout l'objet.
+    const safe = sanitizeLighting(settings)
+    gl.useProgram(program)
+    gl.uniform1i(uniforms.uLightingModel, MODEL_NUMBER[safe.model]) // entier : 1i et non 1f
+    gl.uniform3fv(uniforms.uLightPosition, safe.position)
+    gl.uniform3fv(uniforms.uLightColor, parseHexColor(safe.color))
+    gl.uniform1f(uniforms.uAmbient, safe.ambient)
+    gl.uniform1f(uniforms.uSpecularIntensity, safe.specular)
+    gl.uniform1f(uniforms.uShininess, safe.shininess)
+    gl.uniform1f(uniforms.uGaussianMean, safe.gaussianMean)
+    gl.uniform1f(uniforms.uGaussianStdDev, safe.gaussianStdDev)
+  }
+  applyLighting(initialLighting)
 
   const setProjection = (projection: Mat4) => {
     gl.useProgram(program)
@@ -159,6 +212,8 @@ export function createMeshRenderer(gl: WebGL2RenderingContext, initialMesh: Mesh
       current.dispose() // libère l'ancien VAO et ses buffers, que le ramasse-miettes ne verrait pas
       current = next
     },
+
+    setLighting: applyLighting,
 
     dispose() {
       current.dispose()
