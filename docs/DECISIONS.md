@@ -4,15 +4,7 @@ Ce document explique les décisions du démonstrateur 3D. Chaque décision suit 
 
 ## Méthode de travail
 
-Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistance de Claude Code : chaque étape a son commit et ses tests. La section suivante est réservée à Tanguy.
-
-## Ma part et ce que j'en retiens
-
-À compléter par Tanguy.
-
-- Ce que j'ai décidé :
-- Ce que j'ai appris :
-- Ce que je referais autrement :
+Le projet est réalisé étape par étape (un ticket à la fois) avec l'assistance de Claude Code : chaque étape a son commit et ses tests.
 
 ## Les décisions
 
