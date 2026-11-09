@@ -9,7 +9,9 @@ describe('shaders du cube (texte GLSL)', () => {
     ['cube.vert', vertexSource],
     ['cube.frag', fragmentSource],
   ])('%s commence par #version 300 es, tout en première ligne (sinon la compilation échoue)', (_name, source) => {
-    expect(source.startsWith('#version 300 es\n')).toBe(true)
+    // `^` sans drapeau `m` : rien avant `#version` (ni BOM, ni ligne vide). `\r?\n` accepte les deux
+    // fins de ligne, car Git peut convertir les fichiers en CRLF sur Windows.
+    expect(source).toMatch(/^#version 300 es\r?\n/)
   })
 
   it('le fragment shader déclare la précision des flottants (obligatoire en GLSL ES)', () => {

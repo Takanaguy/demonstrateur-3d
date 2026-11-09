@@ -20,7 +20,7 @@ Réalisé avec l'assistance de Claude Code. Les choix et leurs raisons sont dans
 - Les ressources GPU (programme, buffers, VAO) sont créées et supprimées proprement, y compris avec le double montage de StrictMode.
 - Si le navigateur perd le contexte WebGL puis le rend (veille, pilote), le dessin est recréé et reprend tout seul.
 - Si les shaders sont refusés, le message de repli s'affiche et le journal du compilateur va dans la console.
-- 161 tests (Vitest) : maths, géométrie, helpers WebGL avec un faux contexte, cycle de vie du composant. Bundle de production : 232 kB (752 kB avec Three.js).
+- 163 tests (Vitest) : maths, géométrie, helpers WebGL avec un faux contexte, cycle de vie du composant. Bundle de production : 232 kB (752 kB avec Three.js).
 
 **Pas encore fait**
 - Formes de base (sphère, cylindre, etc.) et chargement de fichiers OBJ (il n'y a pas d'analyseur OBJ).

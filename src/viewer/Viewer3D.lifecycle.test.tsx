@@ -446,6 +446,39 @@ describe('Viewer3D : taille et redimensionnement', () => {
     expect(fake.mocks.viewport).toHaveBeenCalledWith(0, 0, 640, 480)
   })
 
+  it("n'écrit pas width et height quand la taille ne change pas (écrire efface le canvas)", () => {
+    vi.stubGlobal('devicePixelRatio', 1)
+    const { canvas, fake } = mountViewer()
+    stubCanvasSize(canvas, 800, 400)
+    fireResize()
+
+    // Espions sur l'instance : chaque ÉCRITURE de width ou height est comptée (la lecture reste normale).
+    const writes = { width: 0, height: 0 }
+    for (const key of ['width', 'height'] as const) {
+      let value = canvas[key]
+      Object.defineProperty(canvas, key, {
+        configurable: true,
+        get: () => value,
+        set: (next: number) => {
+          writes[key]++
+          value = next
+        },
+      })
+    }
+    const viewportCalls = fake.mocks.viewport.mock.calls.length
+
+    fireResize() // même taille que la précédente
+
+    expect(writes).toEqual({ width: 0, height: 0 })
+    // Le viewport est quand même remis à jour (inoffensif), seul l'effacement du canvas est évité.
+    expect(fake.mocks.viewport.mock.calls.length).toBe(viewportCalls + 1)
+
+    // Contrôle des espions : une vraie nouvelle taille, elle, est bien écrite.
+    stubCanvasSize(canvas, 900, 450)
+    fireResize()
+    expect(writes).toEqual({ width: 1, height: 1 })
+  })
+
   it('ignore une taille nulle, sans toucher au viewport, à la projection ni au canvas', () => {
     const { canvas, fake } = mountViewer()
     const projectionCalls = fake.uniformHistory('uProjection').length

@@ -1,3 +1,4 @@
+import { createCubeGeometry } from '../core/cube'
 import { length } from '../core/vec3'
 import { createFakeGl } from '../test/fakeGl'
 import { createCubeRenderer } from './cubeRenderer'
@@ -50,6 +51,26 @@ describe('createCubeRenderer : création', () => {
     const view = lastUniform('uView')!
     expect(view[14]).toBeCloseTo(-5)
     expect(view[0]).toBeCloseTo(1)
+  })
+
+  it("branche les positions sur l'entrée 0 et les normales sur l'entrée 1, comme le vertex shader les lit", () => {
+    const { gl, mocks, attributeBindings } = createFakeGl()
+
+    createCubeRenderer(gl)
+
+    // Les deux entrées sont activées dans l'ordre 0 puis 1, chacune lue par paquets de 3 flottants.
+    expect(mocks.enableVertexAttribArray.mock.calls).toEqual([[0], [1]])
+    expect(mocks.vertexAttribPointer.mock.calls).toEqual([
+      [0, 3, gl.FLOAT, false, 0, 0],
+      [1, 3, gl.FLOAT, false, 0, 0],
+    ])
+    // Et ce qui alimente chaque entrée est le bon buffer : positions sur 0, normales sur 1.
+    const geometry = createCubeGeometry(1.5)
+    const [positions, normals] = attributeBindings()
+    expect(positions).toEqual({ location: 0, size: 3, data: Array.from(geometry.positions) })
+    expect(normals).toEqual({ location: 1, size: 3, data: Array.from(geometry.normals) })
+    // Garde-fou : si positions et normales étaient identiques, l'échange passerait inaperçu.
+    expect(positions!.data).not.toEqual(normals!.data)
   })
 
   it('ne transpose jamais les matrices (elles sont déjà en colonnes-majeures)', () => {

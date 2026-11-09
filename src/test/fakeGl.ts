@@ -14,6 +14,16 @@ interface FakeResource {
   id: number
   /** Pour un shader : son type (VERTEX_SHADER ou FRAGMENT_SHADER). */
   shaderType?: number
+  /** Pour un buffer : les données copiées par le dernier `bufferData`. */
+  data?: number[]
+}
+
+/** Un appel à `vertexAttribPointer`, avec le contenu du buffer qui était relié à ARRAY_BUFFER à ce moment. */
+export interface AttributeBinding {
+  location: number
+  size: number
+  /** Les données du buffer relié : c'est lui que le GPU lira pour cette entrée du shader. */
+  data: number[]
 }
 
 export interface FakeGlOptions {
@@ -77,6 +87,10 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     uniformHistory.set(name, history)
   }
 
+  /** Le buffer actuellement relié, par cible (ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER). */
+  const boundBuffers = new Map<number, FakeResource | null>()
+  const attributeBindings: AttributeBinding[] = []
+
   const mocks = {
     ...CONSTANTS,
     get drawingBufferWidth() {
@@ -107,15 +121,23 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     useProgram: vi.fn(),
 
     createBuffer: vi.fn(() => make('buffer')),
-    bindBuffer: vi.fn(),
-    bufferData: vi.fn(),
+    bindBuffer: vi.fn((target: number, buffer: unknown) => {
+      boundBuffers.set(target, buffer as FakeResource | null)
+    }),
+    bufferData: vi.fn((target: number, data: ArrayLike<number>) => {
+      const bound = boundBuffers.get(target)
+      if (bound) bound.data = Array.from(data)
+    }),
     deleteBuffer: vi.fn(remove),
 
     createVertexArray: vi.fn(() => make('vertexArray')),
     bindVertexArray: vi.fn(),
     deleteVertexArray: vi.fn(remove),
     enableVertexAttribArray: vi.fn(),
-    vertexAttribPointer: vi.fn(),
+    vertexAttribPointer: vi.fn((location: number, size: number) => {
+      const bound = boundBuffers.get(CONSTANTS.ARRAY_BUFFER)
+      attributeBindings.push({ location, size, data: bound?.data ?? [] })
+    }),
 
     getUniformLocation: vi.fn((_program: unknown, name: string) => {
       let location = uniformLocations.get(name)
@@ -166,6 +188,8 @@ export function createFakeGl(options: FakeGlOptions = {}) {
     uniformHistory: (name: string) => uniformHistory.get(name) ?? [],
     /** Dernière valeur envoyée pour un uniform. */
     lastUniform: (name: string) => uniformHistory.get(name)?.at(-1)?.values,
+    /** Pour chaque `vertexAttribPointer`, l'entrée du shader branchée et les données du buffer qui l'alimente. */
+    attributeBindings: () => [...attributeBindings],
     /** Change la taille du tampon de dessin (le vrai canvas la fixe via canvas.width). */
     setSize(width: number, height: number) {
       size.width = width
